@@ -1,0 +1,27 @@
+{
+  "name": "slingshot-interop",
+  "version": "0.2.0",
+  "private": true,
+  "description": "The standalone gate both siblings' release checklists rely on: one command runs the real Slingshot client executable against the real Slingshot Agent Sling-only bundle inside rootless Podman containers, with each side pinned by digest to released bytes or owner-supplied candidate bytes, and one report naming every byte a run was about.",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "engines": {
+    "bun": "1.4.2"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/bun": "1.4.2",
+    "typescript": "5.9.3"
+  },
+  "scripts": {
+    "quality": "scripts/quality",
+    "interop": "scripts/interop",
+    "smoke": "scripts/smoke",
+    "prepare:tooling": "scripts/prepare_tooling",
+    "verify:tooling": "scripts/verify_tooling",
+    "prepare:locked-dependency-cache": "scripts/prepare_locked_dependency_cache",
+    "verify:locked-dependency-cache": "scripts/verify_locked_dependency_cache",
+    "prepare:interop-images": "scripts/prepare_interop_images",
+    "verify:interop-images": "scripts/verify_interop_images"
+  }
+}

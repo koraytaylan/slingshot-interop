@@ -1,0 +1,32 @@
+# Build output and downloaded dependencies.
+#
+# Makina asks agents to build and verify their work, then commits the whole
+# task worktree. Anything a build writes that is not ignored here is committed
+# with the task and rejected as outside its authored footprint - so these rules
+# are what keep the first task that compiles anything from failing the run.
+#
+# Every directory below is where a prepared input or a bounded output lives:
+# the pinned Bun tooling, the locked dependency cache, the supplied sibling
+# bytes, the installed modules, and the per-run work directory. Each is
+# prepared once by a named command and verified offline by the gate; none of
+# it is source. Add your own; nothing below is removed by Makina.
+
+# The pinned Bun tooling, installed by scripts/prepare_tooling.
+/.tooling/
+
+# The locked dependency cache, populated by scripts/prepare_locked_dependency_cache.
+/.dependency-cache/
+
+# The supplied sibling inputs: each side's released or candidate bytes, placed
+# by their holder, never built, fetched, or cached here.
+/.supplied/
+
+# The installed modules the compiler and the type definitions need.
+/node_modules/
+
+# The per-run work directory: bounded capture files, the scratch home, and the
+# run report, all written by one run and gone when the run is.
+/.runs/
+
+# OS noise
+.DS_Store
