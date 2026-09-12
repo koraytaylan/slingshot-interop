@@ -10,8 +10,8 @@ touches:
   - src/harness/values.test.ts
   - src/harness/values.ts
   - support/harness-values.toml
-status: planned
-merged_as: ""
+status: done
+merged_as: "e2b41a611b1af9d811f9e201fa4367150b953f55"
 ---
 # Harness values
 
