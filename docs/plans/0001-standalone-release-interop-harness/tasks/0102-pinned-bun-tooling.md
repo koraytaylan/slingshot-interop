@@ -10,8 +10,8 @@ touches:
   - scripts/prepare_tooling
   - scripts/verify_tooling
   - support/tooling.toml
-status: planned
-merged_as: ""
+status: done
+merged_as: 76669f41f275eaa9575ef03ff75ae2e5e007a270
 ---
 # Pinned Bun tooling
 
