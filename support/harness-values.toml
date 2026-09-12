@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright 2026 Koray Taylan Davgana
+
+# The one place every bound and deadline the harness uses is written down,
+# each with its reason. Every value is read through the typed loader in
+# src/harness/values.ts and nowhere else: a value written down twice is two
+# things that can disagree quietly.
+
+[readiness]
+
+# Reason: the author runtime is a published image whose first activation
+# compiles and installs a resolved bundle through the platform's own console
+# route, so its wait is the long one; a shorter number here turns a slow cold
+# start into a false failure.
+published_runtime_seconds = 900
+
+# Reason: the containers this harness assembles from its own bytes — the
+# client runner and the severance proxy — start nothing but their runtime, so
+# their wait is the short one; the long published-runtime deadline must not
+# mask a harness-side startup that never completes.
+harness_seconds = 120
+
+# Reason: readiness is polled, never slept for a fixed span, and the poll
+# interval is the smallest span worth paying for; one number, so no poller
+# picks its own.
+poll_interval_seconds = 2
+
+[stop]
+
+# Reason: the grace a stopping container gets to flush and exit on its own
+# before it is killed; short enough not to stall a run, long enough that an
+# orderly shutdown is not mistaken for a hang.
+grace_seconds = 10
+
+[capture]
+
+# Reason: the bound on how much container output a capture file may hold,
+# so no run can turn unbounded log volume into unbounded memory or disk;
+# large enough that a scenario's own chatter is never truncated in practice.
+maximum_bytes = 4194304
+
+[label]
+
+# Reason: the label every container this harness starts carries, so the leak
+# check lists only what this harness created and nothing else on the host is
+# ever touched or reported.
+key = "rs.slingshot.interop"
+
+[ports]
+
+# Reason: the author runtime's HTTP port, the one port the harness publishes
+# to the host for its own reads, mapped as-is so a report can name it.
+author = 8080
+
+# Reason: the client runner's daemon port, reached over the run's network
+# only and never published, because nothing outside the run talks to it.
+client = 8081
+
+# Reason: the port the severance proxy listens on inside the run's network,
+# the address the client's profile points at so every byte can be severed on
+# command.
+proxy = 8082
+
+[severance]
+
+# Reason: the chunk size the proxy forwards in, small enough that a severed
+# reset lands mid-stream rather than after a whole body, large enough that
+# forwarding is not dominated by per-chunk overhead.
+chunk_bytes = 65536
+
+[planted_result]
+
+# Reason: the size a scenario plants comfortably above the protocol's inline
+# result bound, so the oversized-result path answers with an artifact
+# reference every time and never flirts with the inline path.
+bytes = 10485760
