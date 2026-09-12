@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright 2026 Koray Taylan Davgana
+
+# The one place the harness's external tooling is pinned. Every value carries
+# its reason: scripts/prepare_tooling fetches exactly what this table names and
+# verifies the digest before unpacking, scripts/verify_tooling verifies the
+# installed binary against it offline, and no other file restates any of it.
+
+[bun]
+
+# Reason: Bun is the harness runtime and an external executable, so one exact
+# version is recorded the way both siblings record theirs; package.json's
+# engines and devDependencies carry the same number and this table is the
+# place the bytes it names are written down.
+version = "1.4.2"
+
+# Reason: the release tag on GitHub is the origin a run can be reproduced
+# from; the download URL is derived from it and from the archive name alone.
+origin = "https://github.com/oven-sh/bun/releases/tag/bun-v1.4.2"
+
+# Reason: the exact release asset the preparation command fetches, so no
+# mirror, no bun-upgrade channel, and no version-prefixed redirect is in the
+# path between the pin and the bytes.
+archive = "bun-linux-x64.zip"
+
+# Reason: the digest of the archive exactly as published, recorded from the
+# release asset itself; scripts/prepare_tooling refuses any fetch whose bytes
+# do not match it.
+archive_sha256 = "36368faef7527875d5ffa52e53cd48021741f2a83eb6208a8dd64068d422a913"
+
+# Reason: the digest of the executable inside the archive, so verification
+# does not have to keep the archive around and everything that runs Bun
+# checks the one file it executes against this value, offline.
+binary_sha256 = "a83d263767d839e4d2649ca8e35d07159c7afc99afdc96d731ced29e056dda0c"
+
+# Reason: the archive unpacks to exactly one directory containing the
+# executable; the preparation command's installed layout is derived from
+# this and verify_tooling reads the binary at it.
+archive_root = "bun-linux-x64"
+binary_name = "bun"
