@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright 2026 Koray Taylan Davgana
+
+# The one command in this repository that reaches the network. It says so, it
+# fetches nothing but the pinned archive named in support/tooling.toml, and it
+# verifies the digest before unpacking: a differing archive is a refusal, not
+# a warning. Everything downstream verifies offline with scripts/verify_tooling
+# and never needs this command again.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TOOLING="${REPO_ROOT}/support/tooling.toml"
+INSTALL_ROOT="${REPO_ROOT}/.tooling"
+
+if [ ! -f "${TOOLING}" ]; then
+	echo "support/tooling.toml is missing; nothing can be pinned without it" >&2
+	exit 1
+fi
+
+read_value() {
+	local key="$1"
+	awk -v key="${key}" '
+		$0 ~ /^\[/ { section = $0 }
+		$1 == key { if (section == "[bun]") { gsub(/^[^=]*= *"|"$/, "", $0); print $0; exit } }
+	' "${TOOLING}"
+}
+
+version="$(read_value version)"
+archive="$(read_value archive)"
+archive_sha256="$(read_value archive_sha256)"
+archive_root="$(read_value archive_root)"
+binary_name="$(read_value binary_name)"
+
+for value in "${version}" "${archive}" "${archive_sha256}" "${archive_root}" "${binary_name}"; do
+	if [ -z "${value}" ]; then
+		echo "support/tooling.toml is missing a pinned value; every value must be recorded" >&2
+		exit 1
+	fi
+done
+
+url="https://github.com/oven-sh/bun/releases/download/bun-v${version}/${archive}"
+
+echo "prepare_tooling reaches the network: fetching ${url} (the only fetch this repository makes)"
+
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "${TMP_DIR}"' EXIT
+
+downloaded="${TMP_DIR}/${archive}"
+if command -v curl > /dev/null 2>&1; then
+	curl --fail --location --silent --show-error --output "${downloaded}" "${url}" \
+		|| { echo "fetching the pinned archive failed; the origin or the network is the thing to check" >&2; exit 1; }
+elif command -v wget > /dev/null 2>&1; then
+	wget --quiet --output-document="${downloaded}" "${url}" \
+		|| { echo "fetching the pinned archive failed; the origin or the network is the thing to check" >&2; exit 1; }
+else
+	echo "neither curl nor wget is available; the pinned archive cannot be fetched" >&2
+	exit 1
+fi
+
+actual_sha256="$(sha256sum "${downloaded}" | awk '{print $1}')"
+if [ "${actual_sha256}" != "${archive_sha256}" ]; then
+	echo "fetched archive digest ${actual_sha256} differs from the pinned ${archive_sha256}; refusing it" >&2
+	echo "check whether the origin moved, and re-record the pin in support/tooling.toml only from the release asset itself" >&2
+	exit 1
+fi
+
+echo "archive digest matches the pin; unpacking"
+
+staging="${TMP_DIR}/staged"
+unzip -q "${downloaded}" -d "${staging}"
+binary="${staging}/${archive_root}/${binary_name}"
+if [ ! -f "${binary}" ]; then
+	echo "the unpacked archive has no ${archive_root}/${binary_name}; the pin does not describe the bytes it names" >&2
+	exit 1
+fi
+
+rm -rf "${INSTALL_ROOT}"
+mkdir -p "${INSTALL_ROOT}/${archive_root}"
+mv "${staging}/${archive_root}"/* "${INSTALL_ROOT}/${archive_root}/"
+chmod +x "${INSTALL_ROOT}/${archive_root}/${binary_name}"
+
+"${INSTALL_ROOT}/${archive_root}/${binary_name}" --version >/dev/null
+
+echo "installed bun ${version} at .tooling/${archive_root}/${binary_name}; run scripts/verify_tooling to confirm offline"

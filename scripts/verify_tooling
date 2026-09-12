@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright 2026 Koray Taylan Davgana
+
+# Verifies the installed Bun binary against the pinning, offline: it never
+# fetches anything. A missing or modified binary is a refusal naming
+# scripts/prepare_tooling, never a fetch and never a quiet skip.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TOOLING="${REPO_ROOT}/support/tooling.toml"
+INSTALL_ROOT="${REPO_ROOT}/.tooling"
+
+if [ ! -f "${TOOLING}" ]; then
+	echo "support/tooling.toml is missing; nothing can be verified against it" >&2
+	exit 1
+fi
+
+read_value() {
+	local key="$1"
+	awk -v key="${key}" '
+		$0 ~ /^\[/ { section = $0 }
+		$1 == key { if (section == "[bun]") { gsub(/^[^=]*= *"|"$/, "", $0); print $0; exit } }
+	' "${TOOLING}"
+}
+
+version="$(read_value version)"
+binary_sha256="$(read_value binary_sha256)"
+archive_root="$(read_value archive_root)"
+binary_name="$(read_value binary_name)"
+
+for value in "${version}" "${binary_sha256}" "${archive_root}" "${binary_name}"; do
+	if [ -z "${value}" ]; then
+		echo "support/tooling.toml is missing a pinned value; every value must be recorded" >&2
+		exit 1
+	fi
+done
+
+binary="${INSTALL_ROOT}/${archive_root}/${binary_name}"
+
+if [ ! -f "${binary}" ]; then
+	echo "bun ${version} is not installed at ${binary}; run scripts/prepare_tooling to fetch and install it" >&2
+	exit 1
+fi
+
+actual_sha256="$(sha256sum "${binary}" | awk '{print $1}')"
+if [ "${actual_sha256}" != "${binary_sha256}" ]; then
+	echo "the installed bun binary digest ${actual_sha256} differs from the pinned ${binary_sha256}; refusing it" >&2
+	echo "run scripts/prepare_tooling to reinstall the pinned bytes" >&2
+	exit 1
+fi
+
+reported_version="$("${binary}" --version)"
+if [ "${reported_version}" != "${version}" ]; then
+	echo "the installed bun binary reports ${reported_version} but the pin records ${version}; refusing it" >&2
+	echo "run scripts/prepare_tooling to reinstall the pinned bytes" >&2
+	exit 1
+fi
+
+echo "bun ${version} verified offline: digest and version match the pin"
