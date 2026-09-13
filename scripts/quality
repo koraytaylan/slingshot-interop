@@ -6,8 +6,9 @@
 # fetches nothing: each stage that needs a prepared input verifies it offline
 # and refuses naming the one command that prepares it. The stages are fixed —
 # verify the pinned tooling, verify the locked dependency cache, install
-# offline from it, type check with no error suppressed, run the whole unit
-# suite — so a pass means the same thing on every machine.
+# offline from it, verify the pinned interop images, type check with no error
+# suppressed, run the whole unit suite — so a pass means the same thing on
+# every machine.
 
 set -euo pipefail
 
@@ -32,19 +33,25 @@ scripts/verify_tooling
 echo "quality: verifying the locked dependency cache"
 scripts/verify_locked_dependency_cache
 
-# Stage 3: install offline from the verified cache. It never names a
+# Stage 3: the pinned interop images. scripts/verify_interop_images refuses
+# a missing or re-tagged image by naming scripts/prepare_interop_images; it
+# never pulls, so a gate run without preparation is a refusal, not a fetch.
+echo "quality: verifying the pinned interop images"
+scripts/verify_interop_images
+
+# Stage 4: install offline from the verified cache. It never names a
 # registry; with the cache refused above, this stage cannot be reached
 # unfed.
 echo "quality: installing offline from the locked dependency cache"
 "${BUN}" install --frozen-lockfile --offline --cache-dir "${REPO_ROOT}/.dependency-cache" >/dev/null
 
-# Stage 4: the type check. Every diagnostic is an error here: no error is
+# Stage 5: the type check. Every diagnostic is an error here: no error is
 # suppressed (no --skipLibCheck override, no filtering, no exit-code
 # tolerance).
 echo "quality: running the type check"
 "${BUN}" "${REPO_ROOT}/node_modules/typescript/bin/tsc" --noEmit -p "${REPO_ROOT}/tsconfig.json"
 
-# Stage 5: the whole unit suite, every discovered test file, no filter and
+# Stage 6: the whole unit suite, every discovered test file, no filter and
 # no exclusion.
 echo "quality: running the unit suite"
 "${BUN}" test
