@@ -8,8 +8,8 @@ depends_on:
 gated: false
 touches:
   - src/scenarios/artifact-transfer.scenario.ts
-status: planned
-merged_as: ""
+status: done
+merged_as: eaf23f7aff998623e9770277df4551ce567d217d
 ---
 # Artifact transfer scenario
 
