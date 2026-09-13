@@ -9,8 +9,8 @@ depends_on:
 gated: false
 touches:
   - src/scenarios/severed-submission.scenario.ts
-status: planned
-merged_as: ""
+status: done
+merged_as: "1779bb46eeaaca84f71a8ac37f17c325df57811a"
 ---
 # Severed submission scenario
 
