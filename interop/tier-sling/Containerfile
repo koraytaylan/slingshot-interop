@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright 2026 Koray Taylan Davgana
+
+# The pinned Java runtime layered over the pinned published Sling runtime.
+# Both bases are digest-pinned in support/interop-images.toml, which is the
+# one place their references are named; nothing here restates them.
+
+FROM docker.io/apache/sling@sha256:8722cd66ae0758e50784ac21df836c8f8d9e443d105e1a4292a4cb7f810a8cc9
+
+# The declared Java 21 runtime, layered over the published image: the
+# published image's own runtime and ASM cannot read what the agent side
+# compiles, so the tier runs on the release the deployment matrix names.
+COPY --from=docker.io/library/eclipse-temurin@sha256:4cfc63a7118da9267c17e2c988e1599d83d5d64a3832a760f0e77c7e8f6b29f7 /opt/java/openjdk /opt/java/temurin
+
+ENV JAVA_HOME=/opt/java/temurin
+ENV PATH="/opt/java/temurin/bin:${PATH}"

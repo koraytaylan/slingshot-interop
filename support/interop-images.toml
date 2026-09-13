@@ -5,8 +5,24 @@
 # content digest: a tag moves, a digest does not. Each row records the exact
 # bytes scripts/prepare_interop_images fetches — by full digest-pinned
 # reference, never by tag — and scripts/verify_interop_images verifies
-# offline, naming this file's preparation command on any absence. Every value
-# carries its reason, and no other file restates any of it.
+# offline, naming this file's preparation command on any absence. It also
+# builds the one Containerfile this pinning records and records its built
+# identifier. Every value carries its reason, and no other file restates any
+# of it.
+
+# [tier-sling] records the author half's built image: the preparation command
+# builds it once from the two pinned bases below, and the gate verifies it by
+# this row's name and recorded identifier — never building, never tagging,
+# never fetching. The build is a preparation act, so its absence is the same
+# kind of refusal as a missing pull, and it names the same command.
+[tier-sling]
+name = "localhost/slingshot-interop-tier-sling"
+tag = "pinned"
+# Reason: the built identifier is recorded by the preparation command after
+# the build and is explicitly absent until then, like a released slot: the
+# gate refuses an absent build by naming the preparation command, and this
+# file stays the one place the built image is named.
+identifier = "sha256:a3be64b4e918351dd602223280ebaf0dc0d7223ad32f4260311eb64a829d7321"
 
 [probe]
 
