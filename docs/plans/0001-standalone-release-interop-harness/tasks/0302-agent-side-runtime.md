@@ -14,8 +14,8 @@ touches:
   - src/sides/agent-runtime.test.ts
   - src/sides/agent-runtime.ts
   - support/interop-images.toml
-status: planned
-merged_as: ""
+status: done
+merged_as: 84cc0f63097f67461462a2408a2c51dc73cdbad1
 ---
 # Agent-side runtime
 
