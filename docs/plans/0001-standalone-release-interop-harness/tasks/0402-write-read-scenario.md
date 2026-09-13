@@ -8,8 +8,8 @@ depends_on:
 gated: false
 touches:
   - src/scenarios/write-read.scenario.ts
-status: planned
-merged_as: ""
+status: done
+merged_as: "4c0ae5086e4ab2e30ee7d8e84e338e7157e5b14f"
 ---
 # Write-then-read scenario
 
