@@ -10,11 +10,20 @@
 # identifier. Every value carries its reason, and no other file restates any
 # of it.
 
-# [tier-sling] records the author half's built image: the preparation command
-# builds it once from the two pinned bases below, and the gate verifies it by
-# this row's name and recorded identifier — never building, never tagging,
-# never fetching. The build is a preparation act, so its absence is the same
-# kind of refusal as a missing pull, and it names the same command.
+# [client-runner] records the client half's built image the same way: built
+# once from the pinned glibc base, and verified offline by this row's name
+# and recorded identifier. The release executable is mounted in at run time
+# and never baked in, so the build has nothing else in it.
+
+[client-runner]
+name = "localhost/slingshot-interop-client-runner"
+tag = "pinned"
+# Reason: the built identifier is recorded by the preparation command after
+# the build and is explicitly absent until then, like a released slot: the
+# gate refuses an absent build by naming the preparation command, and this
+# file stays the one place the built image is named.
+identifier = "sha256:5fff136e852d26da64650c87d0ae849cefabea5a4f9b01e19748b630aa9e7fa0"
+
 [tier-sling]
 name = "localhost/slingshot-interop-tier-sling"
 tag = "pinned"
@@ -55,11 +64,13 @@ platform = "linux/amd64"
 [glibc]
 
 # Reason: the client runner's base. The release executable is mounted in,
-# never baked in, so the base only has to carry the glibc runtime the Linux
-# release row links against and nothing else.
-reference = "docker.io/library/debian@sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867"
+# never baked in, so the base has to carry the glibc the Linux release row
+# links against — the release is built on ubuntu-24.04, whose glibc is
+# 2.39, so a base with an older glibc refuses the executable before anything
+# starts — and a platform trust store the daemon's startup snapshot reads.
+reference = "docker.io/library/debian@sha256:f324c7ff54321e8d9c588493a20244965938ce0aa50bbd1022d38010e9ffc4b1"
 name = "docker.io/library/debian"
-digest = "sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867"
+digest = "sha256:f324c7ff54321e8d9c588493a20244965938ce0aa50bbd1022d38010e9ffc4b1"
 platform = "linux/amd64"
 
 [sling-runtime]
