@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright 2026 Koray Taylan Davgana
+
+# Verifies every pinned container image is present in the local container
+# store at the exact digest recorded in support/interop-images.toml. It never
+# fetches: a missing or re-tagged image is one refusal per absence naming
+# scripts/prepare_interop_images, never a pull and never a quiet skip.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+IMAGES="${REPO_ROOT}/support/interop-images.toml"
+
+if [ ! -f "${IMAGES}" ]; then
+echo "support/interop-images.toml is missing; nothing can be verified against it" >&2
+exit 1
+fi
+
+read_value() {
+local section="$1"
+local key="$2"
+awk -v want="[${section}]" -v key="${key}" '
+$0 ~ /^\[/ { in_section = ($0 == want) }
+in_section && $1 == key { gsub(/^[^=]*= *"|"$/, "", $0); print $0; exit }
+' "${IMAGES}"
+}
+
+SECTIONS="probe glibc sling-runtime java-runtime"
+PREPARE="scripts/prepare_interop_images"
+failures=0
+
+for section in ${SECTIONS}; do
+name="$(read_value "${section}" name)"
+digest="$(read_value "${section}" digest)"
+reference="$(read_value "${section}" reference)"
+if [ -z "${name}" ] || [ -z "${digest}" ] || [ -z "${reference}" ]; then
+echo "support/interop-images.toml is missing a pinned value in [${section}]; every value must be recorded" >&2
+exit 1
+fi
+
+if ! podman image exists "${name}@${digest}"; then
+# Distinguish a wholly absent image from one re-tagged to the name without
+# its digest: both refuse, each saying which.
+if podman image exists "${name}" 2>/dev/null && podman images --format '{{.Digest}}' --filter reference="${name}" 2>/dev/null | grep -q .; then
+echo "[${section}] an image tagged ${name} exists in the local store but not at the pinned ${digest}; the tag moved or the store holds different bytes" >&2
+else
+echo "[${section}] ${reference} is not present in the local container store" >&2
+fi
+echo "run ${PREPARE} to pull the pinned image" >&2
+failures=$((failures + 1))
+continue
+fi
+
+echo "[${section}] ${reference} verified offline at the pinned digest"
+done
+
+if [ "${failures}" -gt 0 ]; then
+echo "${failures} pinned image(s) refused; run ${PREPARE} to fetch what the pinning names" >&2
+exit 1
+fi
+
+echo "every pinned interop image verified offline at its digest"

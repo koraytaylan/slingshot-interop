@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright 2026 Koray Taylan Davgana
+
+# The command that fetches the pinned container images. It says so: it reaches
+# the network and pulls only full digest-pinned references read from
+# support/interop-images.toml, never a tag. Everything downstream verifies
+# offline with scripts/verify_interop_images and never needs this command
+# again at gate time.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+IMAGES="${REPO_ROOT}/support/interop-images.toml"
+
+if [ ! -f "${IMAGES}" ]; then
+echo "support/interop-images.toml is missing; nothing can be pinned without it" >&2
+exit 1
+fi
+
+# Reads one value from one section of the pinning: [probe], [glibc],
+# [sling-runtime], [java-runtime].
+read_value() {
+local section="$1"
+local key="$2"
+awk -v want="[${section}]" -v key="${key}" '
+$0 ~ /^\[/ { in_section = ($0 == want) }
+in_section && $1 == key { gsub(/^[^=]*= *"|"$/, "", $0); print $0; exit }
+' "${IMAGES}"
+}
+
+SECTIONS="probe glibc sling-runtime java-runtime"
+
+# The reference must be digest-pinned: a name@sha256:... that ends in the
+# digest recorded in the same row. A tag reference is a pinning error, not
+# something to fetch.
+for section in ${SECTIONS}; do
+name="$(read_value "${section}" name)"
+digest="$(read_value "${section}" digest)"
+reference="$(read_value "${section}" reference)"
+if [ -z "${name}" ] || [ -z "${digest}" ] || [ -z "${reference}" ]; then
+echo "support/interop-images.toml is missing a pinned value in [${section}]; every value must be recorded" >&2
+exit 1
+fi
+case "${reference}" in
+"${name}"@"${digest}") ;;
+*)
+echo "[${section}] reference \"${reference}\" is not the digest-pinned form of ${name} at ${digest}; a tag moves, a digest does not" >&2
+exit 1
+;;
+esac
+done
+
+echo "prepare_interop_images reaches the network: pulling the digest-pinned images (the only fetches this command makes)"
+
+for section in ${SECTIONS}; do
+name="$(read_value "${section}" name)"
+digest="$(read_value "${section}" digest)"
+reference="$(read_value "${section}" reference)"
+platform="$(read_value "${section}" platform)"
+echo "pulling ${reference} (${platform})"
+if ! podman pull --quiet --platform "${platform}" "${reference}" > /dev/null; then
+echo "pulling ${reference} failed; the registry or the network is the thing to check" >&2
+exit 1
+fi
+done
+
+echo "pulled every pinned image; run scripts/verify_interop_images to confirm offline"

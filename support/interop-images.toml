@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright 2026 Koray Taylan Davgana
+
+# The one place every container base image the tiers run on is pinned, by
+# content digest: a tag moves, a digest does not. Each row records the exact
+# bytes scripts/prepare_interop_images fetches — by full digest-pinned
+# reference, never by tag — and scripts/verify_interop_images verifies
+# offline, naming this file's preparation command on any absence. Every value
+# carries its reason, and no other file restates any of it.
+
+[probe]
+
+# Reason: the harness proves its own container lifecycle against this image,
+# so its assertions never wait for somebody else's runtime to become ready;
+# a tiny image with a controllable exit and output is what the lifecycle and
+# readiness tests need and nothing more.
+reference = "docker.io/library/busybox@sha256:b7f3d86d6e84fc17718c48bcde1450807faa2d56704205c697b4bd5df7b9e29f"
+name = "docker.io/library/busybox"
+digest = "sha256:b7f3d86d6e84fc17718c48bcde1450807faa2d56704205c697b4bd5df7b9e29f"
+
+# Reason: the digest above is the linux/amd64 manifest, the only platform the
+# rootless Podman runs of this harness execute on; recorded so a future
+# re-record knows which manifest the bytes were taken from.
+platform = "linux/amd64"
+
+[glibc]
+
+# Reason: the client runner's base. The release executable is mounted in,
+# never baked in, so the base only has to carry the glibc runtime the Linux
+# release row links against and nothing else.
+reference = "docker.io/library/debian@sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867"
+name = "docker.io/library/debian"
+digest = "sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867"
+platform = "linux/amd64"
+
+[sling-runtime]
+
+# Reason: the published Apache Sling runtime the author side starts and the
+# resolved Sling-only bundle is installed into through the platform's own
+# console route; pinned as published so the author half runs on the same
+# public bytes a user of the platform would.
+reference = "docker.io/apache/sling@sha256:8722cd66ae0758e50784ac21df836c8f8d9e443d105e1a4292a4cb7f810a8cc9"
+name = "docker.io/apache/sling"
+digest = "sha256:8722cd66ae0758e50784ac21df836c8f8d9e443d105e1a4292a4cb7f810a8cc9"
+platform = "linux/amd64"
+
+[java-runtime]
+
+# Reason: the Java 21 runtime the agent's deployment rows declare. It is
+# layered over the published Sling runtime rather than inherited from it,
+# because the published image's runtime and ASM cannot read what this side
+# compiles — the same reason the agent's own tier layers it.
+reference = "docker.io/library/eclipse-temurin@sha256:4cfc63a7118da9267c17e2c988e1599d83d5d64a3832a760f0e77c7e8f6b29f7"
+name = "docker.io/library/eclipse-temurin"
+digest = "sha256:4cfc63a7118da9267c17e2c988e1599d83d5d64a3832a760f0e77c7e8f6b29f7"
+platform = "linux/amd64"
