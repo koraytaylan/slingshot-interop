@@ -11,8 +11,8 @@ touches:
   - scripts/interop
   - src/run/orchestration.test.ts
   - src/run/orchestration.ts
-status: planned
-merged_as: ""
+status: done
+merged_as: bc25d093ee33e1ef32ad58b63387fa3bd991efce
 ---
 # The interop command
 
