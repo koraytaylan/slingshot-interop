@@ -13,8 +13,8 @@ touches:
   - scripts/interop
   - src/run/report.test.ts
   - src/run/report.ts
-status: planned
-merged_as: ""
+status: done
+merged_as: "785503d958bbd64da3ad8da27ee5d31a9cf78122"
 ---
 # Run report
 
