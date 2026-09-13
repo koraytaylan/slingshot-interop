@@ -8,8 +8,8 @@ depends_on:
 gated: false
 touches:
   - scripts/smoke
-status: planned
-merged_as: ""
+status: done
+merged_as: "8d0c2f2accd756b6fd601362cd25c2410837ac9f"
 ---
 # Cold start acceptance
 
