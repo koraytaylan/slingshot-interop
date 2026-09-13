@@ -10,8 +10,8 @@ gated: false
 touches:
   - README.md
   - docs/INTEROP.md
-status: planned
-merged_as: ""
+status: done
+merged_as: "6321d6160159385ce9e8f683685ceed392d8c69d"
 ---
 # Release checklist documents
 
