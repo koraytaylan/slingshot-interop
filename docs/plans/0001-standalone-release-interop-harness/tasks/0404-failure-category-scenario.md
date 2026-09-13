@@ -8,8 +8,8 @@ depends_on:
 gated: false
 touches:
   - src/scenarios/failure-category.scenario.ts
-status: planned
-merged_as: ""
+status: done
+merged_as: "2b0eb1f7e26bdfb66dd57ada225b2e5476e37156"
 ---
 # Failure category scenario
 
