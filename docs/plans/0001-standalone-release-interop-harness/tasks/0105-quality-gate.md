@@ -10,7 +10,7 @@ gated: false
 touches:
   - scripts/quality
 status: done
-merged_as: ""
+merged_as: "03f5c11a65ac534b1d85c1a420da092ab0494862"
 ---
 # Quality gate
 
