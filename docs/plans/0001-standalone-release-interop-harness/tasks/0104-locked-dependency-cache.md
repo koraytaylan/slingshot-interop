@@ -12,8 +12,8 @@ touches:
   - scripts/prepare_locked_dependency_cache
   - scripts/verify_locked_dependency_cache
   - support/locked-dependency-cache.toml
-status: planned
-merged_as: ""
+status: done
+merged_as: "3e8ede5177413405b6f28b0c5810cfc16c1bd38d"
 ---
 # Locked dependency cache
 
