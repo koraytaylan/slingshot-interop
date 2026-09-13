@@ -16,8 +16,8 @@ touches:
   - src/sides/client-runtime.test.ts
   - src/sides/client-runtime.ts
   - support/interop-images.toml
-status: planned
-merged_as: ""
+status: done
+merged_as: "d62bf78878066c42a8847482a74b98468ff2ab90"
 ---
 # Client-side runtime
 
