@@ -9,7 +9,7 @@ depends_on:
 gated: false
 touches:
   - scripts/quality
-status: planned
+status: done
 merged_as: ""
 ---
 # Quality gate
