@@ -5,6 +5,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { runInterop } from "../src/run/orchestration.ts";
+import { readSideDocument, resolveSide } from "../src/run/sides/pinning.ts";
+import { writeReport } from "../src/run/report.ts";
 
 const baseDirectory = process.cwd();
 const imagesToml = readFileSync(join(baseDirectory, "support/interop-images.toml"), "utf8");
@@ -31,6 +33,65 @@ if (!outcome.ok) {
 	}
 	process.exit(1);
 }
+
+// Extract label and scenarios from report string
+const lines = outcome.report.split("\n");
+const label = lines[0].replace("Run label: ", "");
+const scenarios = [];
+let recordingScenarios = false;
+for (const line of lines) {
+	if (line === "Scenarios:") {
+		recordingScenarios = true;
+		continue;
+	}
+	if (recordingScenarios && line.startsWith("  - ")) {
+		const content = line.substring(4);
+		const [scenario, result] = content.split(": ");
+		if (result === "ok") {
+			scenarios.push({ scenario, ok: true });
+		} else {
+			scenarios.push({ 
+				scenario, 
+				ok: false, 
+				message: result.startsWith("failed (") ? result.substring(8, result.length - 1) : result 
+			});
+		}
+	}
+}
+
+// Resolve sides (they must be resolved since runInterop succeeded)
+const slingshotDoc = readSideDocument(join(baseDirectory, "support/slingshot-side.toml"));
+const agentDoc = readSideDocument(join(baseDirectory, "support/agent-side.toml"));
+const slingshotRes = resolveSide("slingshot", slingshotDoc, baseDirectory);
+const agentRes = resolveSide("agent", agentDoc, baseDirectory);
+
+if (slingshotRes.refused || agentRes.refused) {
+	console.error("Unexpected side resolution failure after successful run");
+	process.exit(1);
+}
+
+// Prepare image data
+const imagesReport: Record<string, { identifier: string; digest: string }> = {
+	"tier-sling": { 
+		identifier: images["tier-sling"].identifier, 
+		digest: images["tier-sling"].digest || images["tier-sling"].identifier 
+	},
+	"client-runner": { 
+		identifier: images["client-runner"].identifier, 
+		digest: images["client-runner"].digest || images["client-runner"].identifier 
+	},
+};
+
+// Write report to baseDirectory to ensure it survives teardown
+await writeReport(baseDirectory, {
+	label,
+	sides: {
+		slingshot: slingshotRes.resolved,
+		agent: agentRes.resolved,
+	},
+	images: imagesReport,
+	scenarios,
+});
 
 console.log(outcome.report);
 process.exit(0);
