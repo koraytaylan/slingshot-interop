@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright 2026 Koray Taylan Davgana
+
+# The pinning of the slingshot-agent Sling-only bundle side. Every byte this
+# side names was recorded by somebody else: the released slot is written by
+# an owner after a release, and the candidate slot holds bytes an owner built
+# in this repository's own verified environment and acknowledged. The harness
+# never builds, fetches, or caches a sibling; it resolves these slots or
+# refuses.
+#
+# Both slots are explicit about their absence: empty strings and `false` mean
+# nothing has been recorded yet, because there has been no release and no
+# acknowledged candidate. No code carries a special case for absence; the
+# document is the record and src/sides/pinning.ts is its only reader.
+
+[side]
+
+# Reason: the name every refusal and report uses for this side, so a run
+# never confuses the agent bundle with the client executable.
+name = "agent"
+
+[released]
+
+# Reason: the released version an owner recorded after a release; empty
+# until then, because there has been no release to record.
+version = ""
+
+# Reason: the released Sling-only bundle under the supplied-inputs
+# directory, placed there by the side's holder; empty until an owner records
+# a release.
+path = ""
+
+# Reason: the digest of the released bundle exactly as published, recorded
+# from the release bytes; empty until an owner records a release.
+digest = ""
+
+[candidate]
+
+# Reason: the candidate bundle under the supplied-inputs directory, built in
+# this side's own verified environment and placed by its holder; empty until
+# a holder supplies candidate bytes.
+path = ""
+
+# Reason: the digest of the candidate bytes as the holder built them, so a
+# run proves the bytes on disk are the bytes the holder acknowledged; empty
+# until a holder supplies candidate bytes.
+digest = ""
+
+# Reason: the exact commit the candidate was built from, so every result
+# names the source it was about; empty until a holder supplies a candidate.
+commit = ""
+
+# Reason: the holder's acknowledgement that these candidate bytes were built
+# in the sibling's own verified environment; only the holder sets it, and a
+# run refuses an unacknowledged candidate rather than assuming it.
+acknowledged = false
