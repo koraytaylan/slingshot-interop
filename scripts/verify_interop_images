@@ -52,6 +52,28 @@ else
 echo "[tier-sling] ${TIER_NAME}@${TIER_ID} verified offline at the recorded identifier"
 fi
 
+# The built severance-proxy image is verified the same way, by its recorded
+# identifier, and never built or tagged here: an absent build is the same
+# refusal as an absent pull, naming the preparation command.
+PROXY_NAME="$(read_value severance-proxy name)"
+PROXY_TAG="$(read_value severance-proxy tag)"
+PROXY_ID="$(read_value severance-proxy identifier)"
+if [ -z "${PROXY_NAME}" ] || [ -z "${PROXY_TAG}" ]; then
+echo "support/interop-images.toml is missing a pinned value in [severance-proxy]; every value must be recorded" >&2
+exit 1
+fi
+if [ -z "${PROXY_ID}" ]; then
+echo "[severance-proxy] no built identifier is recorded for ${PROXY_NAME}:${PROXY_TAG}; the image has never been built" >&2
+echo "run ${PREPARE} to build the image and record its identifier" >&2
+failures=$((failures + 1))
+elif ! podman image exists "${PROXY_NAME}@${PROXY_ID}"; then
+echo "[severance-proxy] ${PROXY_NAME} is not present in the local container store at the recorded identifier ${PROXY_ID}" >&2
+echo "run ${PREPARE} to build the image and record its identifier" >&2
+failures=$((failures + 1))
+else
+echo "[severance-proxy] ${PROXY_NAME}@${PROXY_ID} verified offline at the recorded identifier"
+fi
+
 for section in ${SECTIONS}; do
 name="$(read_value "${section}" name)"
 digest="$(read_value "${section}" digest)"
