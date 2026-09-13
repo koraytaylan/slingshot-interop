@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright 2026 Koray Taylan Davgana
+
+# The one command that performs every preparation once, runs the self gate,
+# and then runs the interop tier.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "${REPO_ROOT}"
+
+BUN="${REPO_ROOT}/.tooling/bun-linux-x64/bun"
+
+echo "smoke: preparing tooling"
+scripts/prepare_tooling
+
+echo "smoke: preparing locked dependency cache"
+scripts/prepare_locked_dependency_cache
+
+echo "smoke: preparing interop images"
+scripts/prepare_interop_images
+
+echo "smoke: running the self gate"
+scripts/quality
+
+echo "smoke: running the interop tier"
+"${BUN}" run interop
