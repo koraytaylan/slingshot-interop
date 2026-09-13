@@ -30,6 +30,28 @@ SECTIONS="probe glibc sling-runtime java-runtime"
 PREPARE="scripts/prepare_interop_images"
 failures=0
 
+# The built tier-sling image is verified like every other row, by its
+# recorded identifier, and never built or tagged here: an absent build is the
+# same refusal as an absent pull, naming the preparation command.
+TIER_NAME="$(read_value tier-sling name)"
+TIER_TAG="$(read_value tier-sling tag)"
+TIER_ID="$(read_value tier-sling identifier)"
+if [ -z "${TIER_NAME}" ] || [ -z "${TIER_TAG}" ]; then
+echo "support/interop-images.toml is missing a pinned value in [tier-sling]; every value must be recorded" >&2
+exit 1
+fi
+if [ -z "${TIER_ID}" ]; then
+echo "[tier-sling] no built identifier is recorded for ${TIER_NAME}:${TIER_TAG}; the image has never been built" >&2
+echo "run ${PREPARE} to build the image and record its identifier" >&2
+failures=$((failures + 1))
+elif ! podman image exists "${TIER_NAME}@${TIER_ID}"; then
+echo "[tier-sling] ${TIER_NAME} is not present in the local container store at the recorded identifier ${TIER_ID}" >&2
+echo "run ${PREPARE} to build the image and record its identifier" >&2
+failures=$((failures + 1))
+else
+echo "[tier-sling] ${TIER_NAME}@${TIER_ID} verified offline at the recorded identifier"
+fi
+
 for section in ${SECTIONS}; do
 name="$(read_value "${section}" name)"
 digest="$(read_value "${section}" digest)"

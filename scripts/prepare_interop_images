@@ -18,8 +18,8 @@ echo "support/interop-images.toml is missing; nothing can be pinned without it" 
 exit 1
 fi
 
-# Reads one value from one section of the pinning: [probe], [glibc],
-# [sling-runtime], [java-runtime].
+# Reads one value from one section of the pinning: [tier-sling], [probe],
+# [glibc], [sling-runtime], [java-runtime].
 read_value() {
 local section="$1"
 local key="$2"
@@ -65,4 +65,43 @@ exit 1
 fi
 done
 
-echo "pulled every pinned image; run scripts/verify_interop_images to confirm offline"
+echo "prepare_interop_images reaches the network: building the tier-sling image from the pinned bases (no further fetch)"
+
+TIER_NAME="$(read_value tier-sling name)"
+TIER_TAG="$(read_value tier-sling tag)"
+if [ -z "${TIER_NAME}" ] || [ -z "${TIER_TAG}" ]; then
+echo "support/interop-images.toml is missing a pinned value in [tier-sling]; every value must be recorded" >&2
+exit 1
+fi
+CONTAINERFILE="${REPO_ROOT}/interop/tier-sling/Containerfile"
+if [ ! -f "${CONTAINERFILE}" ]; then
+echo "${CONTAINERFILE} is missing; the tier-sling image cannot be built without it" >&2
+exit 1
+fi
+# Build the author half's image once: the published Sling runtime with the
+# pinned Java 21 layered in. The build never fetches — both bases were pulled
+# above by digest and the Containerfile names exactly those digests — so the
+# built bytes descend only from the pinning.
+echo "building ${TIER_NAME}:${TIER_TAG} from interop/tier-sling/Containerfile"
+if ! podman build --quiet --platform linux/amd64 -f "${CONTAINERFILE}" -t "${TIER_NAME}:${TIER_TAG}" "${REPO_ROOT}" > /dev/null; then
+echo "building ${TIER_NAME}:${TIER_TAG} failed; the Containerfile and the pulled bases are the things to check" >&2
+exit 1
+fi
+# Record the built identifier — the image's own content digest — in the same
+# pinning that names it, so the gate verifies by the recorded value and this
+# command is the only thing that ever writes it.
+TIER_ID="$(podman inspect "${TIER_NAME}:${TIER_TAG}" --format '{{.Digest}}')"
+if [ -z "${TIER_ID}" ] || [ "${TIER_ID}" = "null" ]; then
+echo "the built ${TIER_NAME}:${TIER_TAG} reported no digest; the identifier cannot be recorded" >&2
+exit 1
+fi
+# Rewrite exactly the identifier slot in [tier-sling], leaving every comment
+# and every other row untouched.
+awk -v id="${TIER_ID}" '
+BEGIN { in_section = 0 }
+$0 ~ /^\[/ { in_section = ($0 == "[tier-sling]") }
+in_section && $1 == "identifier" { print "identifier = \"" id "\""; next }
+{ print }
+' "${IMAGES}" > "${IMAGES}.tmp" && mv "${IMAGES}.tmp" "${IMAGES}"
+
+echo "pulled every pinned image and built ${TIER_NAME}:${TIER_TAG} at ${TIER_ID}; run scripts/verify_interop_images to confirm offline"
