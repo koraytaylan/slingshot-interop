@@ -23,10 +23,10 @@ lockfile = "bun.lock"
 # digest must hold for any checkout that prepared the cache at its own
 # path); scripts/verify_locked_dependency_cache recomputes it offline with
 # LC_ALL=C collation and refuses any difference.
-manifest_sha256 = "5c1ae7c7bb1fd41ab73a718d05bef2430f47bec20eb04769444b32daee712f6f"
+manifest_sha256 = "1d22e35d62da7f348f578c823015024ad310cc09ba0912bc493bddb90a3292b8"
 
 # Reason: the digest of the committed lockfile itself; the cache is only ever
 # populated from the lockfile, so a lockfile that changes without the cache
 # being repopulated is a divergence scripts/verify_locked_dependency_cache
 # catches here instead of as a raw install error later.
-lockfile_sha256 = "5a8f04a46d9a507493a68453a84dc1873aba25bb7fe524328bcaa11971618255"
+lockfile_sha256 = "946d562ab1c4f81dbd0da6989fc1b43e504f58c19976708352733f40ff261bb7"
