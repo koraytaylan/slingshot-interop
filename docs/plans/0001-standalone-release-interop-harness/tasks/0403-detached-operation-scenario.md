@@ -8,8 +8,8 @@ depends_on:
 gated: false
 touches:
   - src/scenarios/detached-operation.scenario.ts
-status: planned
-merged_as: ""
+status: done
+merged_as: dd2654ca5d576b90e9133e5ba914a70591324a1f
 ---
 # Detached operation scenario
 
