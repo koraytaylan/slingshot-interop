@@ -8,8 +8,8 @@ depends_on:
 gated: false
 touches:
   - src/scenarios/authentication-refusal.scenario.ts
-status: planned
-merged_as: ""
+status: done
+merged_as: "4d2f0603f708868470098257b6c8a93e0b9444bc"
 ---
 # Authentication refusal scenario
 
