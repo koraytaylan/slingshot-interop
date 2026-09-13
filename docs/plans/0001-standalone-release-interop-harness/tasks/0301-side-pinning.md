@@ -11,8 +11,8 @@ touches:
   - src/sides/pinning.ts
   - support/agent-side.toml
   - support/slingshot-side.toml
-status: planned
-merged_as: ""
+status: done
+merged_as: "c944740833128160edb6b94248f67cbb08b5d347"
 ---
 # Side pinning documents
 
