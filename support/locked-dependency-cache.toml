@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright 2026 Koray Taylan Davgana
+
+# The one place the locked dependency cache is described. The harness's only
+# dependencies are the TypeScript compiler and Bun's own type definitions,
+# locked in bun.lock and package.json; scripts/prepare_locked_dependency_cache
+# populates .dependency-cache from that lockfile over the network once, and
+# scripts/verify_locked_dependency_cache verifies it against the digest here
+# offline. No other file restates any of it.
+
+[locked-dependency-cache]
+
+# Reason: the lockfile is the source of exactly what is installed; the cache
+# is only ever populated from it with --frozen-lockfile, so a dependency not
+# in the lockfile is not in the cache.
+lockfile = "bun.lock"
+
+# Reason: the digest of the cache manifest, the sorted list of
+# "<sha256>  <path relative to the cache root>" lines for every file and
+# symlink under .dependency-cache (a symlink line holds the sha256 of its
+# target string with the cache root prefix normalized out, since Bun writes
+# those targets as absolute paths embedding the checkout location and the
+# digest must hold for any checkout that prepared the cache at its own
+# path); scripts/verify_locked_dependency_cache recomputes it offline with
+# LC_ALL=C collation and refuses any difference.
+manifest_sha256 = "5c1ae7c7bb1fd41ab73a718d05bef2430f47bec20eb04769444b32daee712f6f"
+
+# Reason: the digest of the committed lockfile itself; the cache is only ever
+# populated from the lockfile, so a lockfile that changes without the cache
+# being repopulated is a divergence scripts/verify_locked_dependency_cache
+# catches here instead of as a raw install error later.
+lockfile_sha256 = "5a8f04a46d9a507493a68453a84dc1873aba25bb7fe524328bcaa11971618255"

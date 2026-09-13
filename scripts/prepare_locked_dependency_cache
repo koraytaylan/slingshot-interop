@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright 2026 Koray Taylan Davgana
+
+# The command that reaches the network to populate the locked dependency
+# cache: it says so, installs exactly what bun.lock names with
+# --frozen-lockfile, and leaves the cache at .dependency-cache. Everything
+# downstream installs from that cache offline and never needs this command
+# again; scripts/verify_locked_dependency_cache verifies the result offline.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+LOCKFILE="${REPO_ROOT}/bun.lock"
+CACHE_ROOT="${REPO_ROOT}/.dependency-cache"
+
+if [ ! -f "${LOCKFILE}" ]; then
+	echo "bun.lock is missing; the cache cannot be populated without the committed lockfile" >&2
+	exit 1
+fi
+
+BUN="${REPO_ROOT}/.tooling/bun-linux-x64/bun"
+if [ ! -x "${BUN}" ]; then
+	echo "the pinned bun binary is missing at .tooling/bun-linux-x64/bun; run scripts/prepare_tooling first" >&2
+	exit 1
+fi
+
+echo "prepare_locked_dependency_cache reaches the network: installing from ${LOCKFILE} (the cache is populated once, then verified offline)"
+
+# node_modules is removed before the install, not after: with node_modules
+# already present bun installs nothing and writes no cache, and the tree
+# would end up with neither cache content nor installed modules.
+rm -rf "${REPO_ROOT}/node_modules"
+rm -rf "${CACHE_ROOT}"
+# The cache backend (clonefile on supported filesystems, hardlink elsewhere)
+# is chosen by Bun itself, so this run does not pin one; the digest below is
+# what the prepared cache is held to regardless of backend.
+"${BUN}" install --frozen-lockfile --cache-dir "${CACHE_ROOT}" >/dev/null
+
+if [ ! -d "${CACHE_ROOT}" ] || [ -z "$(find "${CACHE_ROOT}" -mindepth 1 -print -quit)" ]; then
+	echo "the install produced no cache at .dependency-cache; the lockfile may name nothing to cache" >&2
+	exit 1
+fi
+
+echo "populated .dependency-cache from the committed lockfile; run scripts/verify_locked_dependency_cache to confirm offline"

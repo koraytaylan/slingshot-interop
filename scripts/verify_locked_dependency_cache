@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright 2026 Koray Taylan Davgana
+
+# Verifies the locked dependency cache against the digest recorded in
+# support/locked-dependency-cache.toml, offline: it never fetches anything. A
+# missing or modified cache is a refusal naming
+# scripts/prepare_locked_dependency_cache, never a fetch and never a repair.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+CACHE_TABLE="${REPO_ROOT}/support/locked-dependency-cache.toml"
+CACHE_ROOT="${REPO_ROOT}/.dependency-cache"
+
+if [ ! -f "${CACHE_TABLE}" ]; then
+	echo "support/locked-dependency-cache.toml is missing; the cache cannot be verified against it" >&2
+	exit 1
+fi
+
+read_value() {
+	local key="$1"
+	awk -v key="${key}" '
+		$0 ~ /^\[/ { section = $0 }
+		$1 == key && section == "[locked-dependency-cache]" { gsub(/^[^=]*= *"|"$/, "", $0); print $0; exit }
+	' "${CACHE_TABLE}"
+}
+
+manifest_sha256="$(read_value manifest_sha256)"
+lockfile_sha256="$(read_value lockfile_sha256)"
+
+for value in "${manifest_sha256}" "${lockfile_sha256}"; do
+	if [ -z "${value}" ]; then
+		echo "support/locked-dependency-cache.toml is missing a pinned value; every value must be recorded" >&2
+		exit 1
+	fi
+done
+
+actual_lockfile_sha256="$(sha256sum "${REPO_ROOT}/bun.lock" | awk '{print $1}')"
+if [ "${actual_lockfile_sha256}" != "${lockfile_sha256}" ]; then
+	echo "bun.lock does not match the digest recorded in support/locked-dependency-cache.toml; the cache cannot be verified against a changed lockfile" >&2
+	echo "run scripts/prepare_locked_dependency_cache to repopulate the cache from the committed lockfile, and re-record the digests in support/locked-dependency-cache.toml only from the result" >&2
+	exit 1
+fi
+
+if [ ! -d "${CACHE_ROOT}" ]; then
+	echo "the locked dependency cache is missing at ${CACHE_ROOT}; run scripts/prepare_locked_dependency_cache to populate it from the committed lockfile" >&2
+	exit 1
+fi
+
+# The manifest covers every file and every symlink under the cache root,
+# sorted with LC_ALL=C so the digest does not depend on the caller's locale.
+# A symlink line holds the sha256 of its target string with the cache root
+# prefix normalized out, so the digest is independent of where the worktree
+# lives (Bun writes those targets as absolute paths embedding the checkout
+# location; any other checkout re-prepares the cache at its own path and
+# must still match the digest committed here).
+actual_manifest="$(cd "${CACHE_ROOT}" && find . \( -type f -o -type l \) -print0 | LC_ALL=C sort -z | while IFS= read -r -d '' p; do if [ -L "${p}" ]; then t="$(readlink "${p}")"; t="${t#${CACHE_ROOT}/}"; h="$(printf '%s' "${t}" | sha256sum | awk '{print $1}')"; else h="$(sha256sum "${p}" | awk '{print $1}')"; fi; p="${p#./}"; printf '%s  %s\n' "${h}" "${p}"; done | LC_ALL=C sort -k2 | sha256sum | awk '{print $1}')"
+
+if [ "${actual_manifest}" != "${manifest_sha256}" ]; then
+	echo "the cache at .dependency-cache does not match the digest recorded in support/locked-dependency-cache.toml; refusing it" >&2
+	echo "run scripts/prepare_locked_dependency_cache to repopulate it from the committed lockfile" >&2
+	exit 1
+fi
+
+echo "locked dependency cache verified offline: the manifest digest matches support/locked-dependency-cache.toml"
