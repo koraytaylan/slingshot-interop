@@ -18,8 +18,8 @@ echo "support/interop-images.toml is missing; nothing can be pinned without it" 
 exit 1
 fi
 
-# Reads one value from one section of the pinning: [tier-sling], [probe],
-# [glibc], [sling-runtime], [java-runtime].
+# Reads one value from one section of the pinning: [tier-sling],
+# [client-runner], [probe], [glibc], [sling-runtime], [java-runtime].
 read_value() {
 local section="$1"
 local key="$2"
@@ -104,6 +104,39 @@ in_section && $1 == "identifier" { print "identifier = \"" id "\""; next }
 { print }
 ' "${IMAGES}" > "${IMAGES}.tmp" && mv "${IMAGES}.tmp" "${IMAGES}"
 
+# The client runner: built from the pinned glibc base. The release
+# executable is mounted in at run time and never baked in, so the
+# Containerfile names the base and the trust store source.
+RUNNER_NAME="$(read_value client-runner name)"
+RUNNER_TAG="$(read_value client-runner tag)"
+if [ -z "${RUNNER_NAME}" ] || [ -z "${RUNNER_TAG}" ]; then
+echo "support/interop-images.toml is missing a pinned value in [client-runner]; every value must be recorded" >&2
+exit 1
+fi
+RUNNER_CONTAINERFILE="${REPO_ROOT}/interop/client-runner/Containerfile"
+if [ ! -f "${RUNNER_CONTAINERFILE}" ]; then
+echo "${RUNNER_CONTAINERFILE} is missing; the client-runner image cannot be built without it" >&2
+exit 1
+fi
+echo "building ${RUNNER_NAME}:${RUNNER_TAG} from interop/client-runner/Containerfile"
+if ! podman build --quiet --platform linux/amd64 -f "${RUNNER_CONTAINERFILE}" -t "${RUNNER_NAME}:${RUNNER_TAG}" "${REPO_ROOT}" > /dev/null; then
+echo "building ${RUNNER_NAME}:${RUNNER_TAG} failed; the Containerfile and the pulled bases are the things to check" >&2
+exit 1
+fi
+RUNNER_ID="$(podman inspect "${RUNNER_NAME}:${RUNNER_TAG}" --format '{{.Digest}}')"
+if [ -z "${RUNNER_ID}" ] || [ "${RUNNER_ID}" = "null" ]; then
+echo "the built ${RUNNER_NAME}:${RUNNER_TAG} reported no digest; the identifier cannot be recorded" >&2
+exit 1
+fi
+# Rewrite exactly the identifier slot in [client-runner], leaving every
+# comment and every other row untouched.
+awk -v id="${RUNNER_ID}" '
+BEGIN { in_section = 0 }
+$0 ~ /^\[/ { in_section = ($0 == "[client-runner]") }
+in_section && $1 == "identifier" { print "identifier = \"" id "\""; next }
+{ print }
+' "${IMAGES}" > "${IMAGES}.tmp" && mv "${IMAGES}.tmp" "${IMAGES}"
+
 echo "prepare_interop_images reaches the network: building the severance-proxy image from the pinned bases (no further fetch)"
 
 # The same preparation act for the severance proxy: built once from the
@@ -145,4 +178,4 @@ in_section && $1 == "identifier" { print "identifier = \"" id "\""; next }
 { print }
 ' "${IMAGES}" > "${IMAGES}.tmp" && mv "${IMAGES}.tmp" "${IMAGES}"
 
-echo "pulled every pinned image and built ${TIER_NAME}:${TIER_TAG} at ${TIER_ID} and ${PROXY_NAME}:${PROXY_TAG} at ${PROXY_ID}; run scripts/verify_interop_images to confirm offline"
+echo "pulled every pinned image, built ${TIER_NAME}:${TIER_TAG} at ${TIER_ID}, ${RUNNER_NAME}:${RUNNER_TAG} at ${RUNNER_ID} and ${PROXY_NAME}:${PROXY_TAG} at ${PROXY_ID}; run scripts/verify_interop_images to confirm offline"
