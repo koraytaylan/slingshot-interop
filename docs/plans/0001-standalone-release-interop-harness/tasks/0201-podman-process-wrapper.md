@@ -10,8 +10,8 @@ gated: false
 touches:
   - src/harness/podman.test.ts
   - src/harness/podman.ts
-status: planned
-merged_as: ""
+status: done
+merged_as: "6082173901003dda3d7b5a56ee870f90163ef79b"
 ---
 # Podman process wrapper
 
