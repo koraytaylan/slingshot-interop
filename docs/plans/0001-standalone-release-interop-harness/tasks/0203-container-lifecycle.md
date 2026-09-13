@@ -10,8 +10,8 @@ gated: false
 touches:
   - src/harness/container.test.ts
   - src/harness/container.ts
-status: planned
-merged_as: ""
+status: done
+merged_as: "3a666940fac9280c0ed82944f970ec12ea7a4c57"
 ---
 # Container lifecycle
 
