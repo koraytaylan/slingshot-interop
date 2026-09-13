@@ -14,7 +14,7 @@ touches:
   - src/harness/severance-proxy.ts
   - support/interop-images.toml
 status: done
-merged_as: ""
+merged_as: "59614e51f51265a6aa37c6822af3b049c265c947"
 ---
 # Severance proxy
 
