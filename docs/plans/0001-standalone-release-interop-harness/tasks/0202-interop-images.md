@@ -11,8 +11,8 @@ touches:
   - scripts/quality
   - scripts/verify_interop_images
   - support/interop-images.toml
-status: planned
-merged_as: ""
+status: done
+merged_as: "e7984646cca013e4e83f9372521043dab9d22272"
 ---
 # Pinned interop images
 
