@@ -104,4 +104,45 @@ in_section && $1 == "identifier" { print "identifier = \"" id "\""; next }
 { print }
 ' "${IMAGES}" > "${IMAGES}.tmp" && mv "${IMAGES}.tmp" "${IMAGES}"
 
-echo "pulled every pinned image and built ${TIER_NAME}:${TIER_TAG} at ${TIER_ID}; run scripts/verify_interop_images to confirm offline"
+echo "prepare_interop_images reaches the network: building the severance-proxy image from the pinned bases (no further fetch)"
+
+# The same preparation act for the severance proxy: built once from the
+# pinned glibc base and the pinned Bun binary already in the tree, with the
+# proxy's own source. The build never fetches — the base was pulled above by
+# digest and the Containerfile names exactly that digest — and its built
+# identifier is recorded in the same slot-and-refusal scheme.
+PROXY_NAME="$(read_value severance-proxy name)"
+PROXY_TAG="$(read_value severance-proxy tag)"
+if [ -z "${PROXY_NAME}" ] || [ -z "${PROXY_TAG}" ]; then
+echo "support/interop-images.toml is missing a pinned value in [severance-proxy]; every value must be recorded" >&2
+exit 1
+fi
+PROXY_CONTAINERFILE="${REPO_ROOT}/interop/severance-proxy/Containerfile"
+PROXY_BINARY="${REPO_ROOT}/.tooling/bun-linux-x64/bun"
+if [ ! -f "${PROXY_CONTAINERFILE}" ]; then
+echo "${PROXY_CONTAINERFILE} is missing; the severance-proxy image cannot be built without it" >&2
+exit 1
+fi
+if [ ! -f "${PROXY_BINARY}" ]; then
+echo "${PROXY_BINARY} is missing; the severance-proxy image carries the pinned Bun binary and cannot be built without it" >&2
+echo "run scripts/prepare_tooling to install the pinned bytes" >&2
+exit 1
+fi
+echo "building ${PROXY_NAME}:${PROXY_TAG} from interop/severance-proxy/Containerfile"
+if ! podman build --quiet --platform linux/amd64 -f "${PROXY_CONTAINERFILE}" -t "${PROXY_NAME}:${PROXY_TAG}" "${REPO_ROOT}" > /dev/null; then
+echo "building ${PROXY_NAME}:${PROXY_TAG} failed; the Containerfile and the pulled base are the things to check" >&2
+exit 1
+fi
+PROXY_ID="$(podman inspect "${PROXY_NAME}:${PROXY_TAG}" --format '{{.Digest}}')"
+if [ -z "${PROXY_ID}" ] || [ "${PROXY_ID}" = "null" ]; then
+echo "the built ${PROXY_NAME}:${PROXY_TAG} reported no digest; the identifier cannot be recorded" >&2
+exit 1
+fi
+awk -v id="${PROXY_ID}" '
+BEGIN { in_section = 0 }
+$0 ~ /^\[/ { in_section = ($0 == "[severance-proxy]") }
+in_section && $1 == "identifier" { print "identifier = \"" id "\""; next }
+{ print }
+' "${IMAGES}" > "${IMAGES}.tmp" && mv "${IMAGES}.tmp" "${IMAGES}"
+
+echo "pulled every pinned image and built ${TIER_NAME}:${TIER_TAG} at ${TIER_ID} and ${PROXY_NAME}:${PROXY_TAG} at ${PROXY_ID}; run scripts/verify_interop_images to confirm offline"

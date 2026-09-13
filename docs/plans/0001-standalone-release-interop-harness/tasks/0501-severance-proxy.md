@@ -13,7 +13,7 @@ touches:
   - src/harness/severance-proxy.test.ts
   - src/harness/severance-proxy.ts
   - support/interop-images.toml
-status: planned
+status: done
 merged_as: ""
 ---
 # Severance proxy

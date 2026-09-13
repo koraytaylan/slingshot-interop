@@ -24,6 +24,19 @@ tag = "pinned"
 # file stays the one place the built image is named.
 identifier = "sha256:a3be64b4e918351dd602223280ebaf0dc0d7223ad32f4260311eb64a829d7321"
 
+# [severance-proxy] records the disruption half's built image: the pinned
+# glibc base carrying the pinned Bun binary and the proxy's own source. The
+# preparation command builds it once and records its identifier exactly the
+# way it records the tier-sling build's.
+[severance-proxy]
+name = "localhost/slingshot-interop-severance-proxy"
+tag = "pinned"
+# Reason: the built identifier is recorded by the preparation command after
+# the build and is explicitly absent until then, like a released slot: the
+# gate refuses an absent build by naming the preparation command, and this
+# file stays the one place the built image is named.
+identifier = "sha256:2b5341a859265a52cc792d72d30cc7b4e6d83b7b7ab18c45bf89a4fd33b0a0c4"
+
 [probe]
 
 # Reason: the harness proves its own container lifecycle against this image,
