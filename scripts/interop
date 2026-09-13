@@ -1,0 +1,36 @@
+#!/usr/bin/env bun
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright 2026 Koray Taylan Davgana
+
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { runInterop } from "../src/run/orchestration.ts";
+
+const baseDirectory = process.cwd();
+const imagesToml = readFileSync(join(baseDirectory, "support/interop-images.toml"), "utf8");
+const images = Bun.TOML.parse(imagesToml);
+
+// Map the TOML sections to the identifier format expected by runInterop
+const imageIdentifiers: Record<string, { readonly identifier: string }> = {
+	"tier-sling": { identifier: images["tier-sling"].identifier },
+	"client-runner": { identifier: images["client-runner"].identifier },
+};
+
+const outcome = await runInterop(baseDirectory, {
+	images: imageIdentifiers,
+});
+
+if (!outcome.ok) {
+	if (outcome.reason === "SIDE_UNRESOLVED") {
+		const steps = outcome.refusals
+			.map((r) => `side "${r.side}" is unresolved: ${r.ownerStep}`)
+			.join("; ");
+		console.error(`Run refused: ${steps}`);
+	} else {
+		console.error(`Run failed: ${outcome.message}`);
+	}
+	process.exit(1);
+}
+
+console.log(outcome.report);
+process.exit(0);
