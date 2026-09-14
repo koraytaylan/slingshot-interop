@@ -5,17 +5,21 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { runInterop } from "../src/run/orchestration.ts";
-import { readSideDocument, resolveSide } from "../src/run/sides/pinning.ts";
+import { readSideDocument, resolveSide } from "../src/sides/pinning.ts";
 import { writeReport } from "../src/run/report.ts";
 
 const baseDirectory = process.cwd();
 const imagesToml = readFileSync(join(baseDirectory, "support/interop-images.toml"), "utf8");
 const images = Bun.TOML.parse(imagesToml);
 
-// Map the TOML sections to the identifier format expected by runInterop
+// Map the TOML sections to the identifier format expected by runInterop.
+// A bare digest inspects nothing locally (Podman resolves "sha256:..." only
+// against digests of untagged image IDs), so the pinned image is named the
+// way the verification names it: name@digest.
 const imageIdentifiers: Record<string, { readonly identifier: string }> = {
-	"tier-sling": { identifier: images["tier-sling"].identifier },
-	"client-runner": { identifier: images["client-runner"].identifier },
+	"tier-sling": { identifier: `${images["tier-sling"].name}@${images["tier-sling"].identifier}` },
+	"client-runner": { identifier: `${images["client-runner"].name}@${images["client-runner"].identifier}` },
+	"severance-proxy": { identifier: `${images["severance-proxy"].name}@${images["severance-proxy"].identifier}` },
 };
 
 const outcome = await runInterop(baseDirectory, {
@@ -79,6 +83,10 @@ const imagesReport: Record<string, { identifier: string; digest: string }> = {
 	"client-runner": { 
 		identifier: images["client-runner"].identifier, 
 		digest: images["client-runner"].digest || images["client-runner"].identifier 
+	},
+	"severance-proxy": { 
+		identifier: images["severance-proxy"].identifier, 
+		digest: images["severance-proxy"].digest || images["severance-proxy"].identifier 
 	},
 };
 

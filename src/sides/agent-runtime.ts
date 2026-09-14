@@ -9,6 +9,7 @@
 // own bound.
 
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { inflateRawSync } from "node:zlib";
 import {
 	startContainer,
@@ -16,6 +17,7 @@ import {
 	type ContainerRefusal,
 } from "../harness/container.ts";
 import type { Values } from "../harness/values.ts";
+import { AUTHOR_RUNTIME_NAME } from "./client-configuration.ts";
 
 // The image the preparation command built and recorded, verified offline by
 // support/interop-images.toml. The caller passes the verified identifier.
@@ -91,6 +93,84 @@ export type AwaitActiveOutcome = { readonly ok: true } | {
 	readonly reason: "NEVER_BECAME_READY";
 	readonly message: string;
 };
+
+// The two OSGi configurations the agent's own interop tier installs before the
+// bundle: the repoinit initializer creating the slingshot-agent-state system
+// user and its /var/slingshot-agent tree with its ACLs, and the service-user
+// mapping binding the bundle's subservices to that user. Both are read from
+// the agent repository's own ui.config content, so the harness carries no
+// second copy of their bytes. Without them every state-backed route answers
+// 500: the service login the bundle asks for maps to no system user.
+export type ConfigureStateOutcome = { readonly ok: true } | {
+	readonly ok: false;
+	readonly reason: "INSTALL_FAILED";
+	readonly message: string;
+};
+
+async function installStateConfiguration(
+	port: number,
+	options: StartSlingRuntimeOptions,
+): Promise<ConfigureStateOutcome> {
+	const base = options.consoleBase ?? `http://127.0.0.1:${port}`;
+	const auth = Buffer.from(
+		`${options.consoleUsername}:${options.consolePassword}`,
+		"utf8",
+	).toString("base64");
+	const headers = { authorization: `Basic ${auth}` };
+	const configsRoot = join(
+		agentRepositoryRoot(),
+		"ui.config/src/main/content/jcr_root/apps/slingshot-agent/osgiconfig/config",
+	);
+	const names = [
+		"org.apache.sling.jcr.repoinit.RepositoryInitializer~slingshot-agent.cfg.json",
+		"org.apache.sling.serviceusermapping.impl.ServiceUserMapperImpl.amended~slingshot-agent.cfg.json",
+	];
+	// The configuration tree must exist before the configs are handed over:
+	// the console's own install route refuses an absent parent.
+	for (const folder of [
+		"/apps/slingshot-agent",
+		"/apps/slingshot-agent/osgiconfig",
+		"/apps/slingshot-agent/osgiconfig/config",
+	]) {
+		const made = await fetch(`${base}${folder}`, {
+			method: "POST",
+			headers,
+			body: new URLSearchParams({ "jcr:primaryType": "sling:Folder" }),
+		});
+		if (made.status >= 400 && made.status !== 409 && made.status !== 201) {
+			return {
+				ok: false,
+				reason: "INSTALL_FAILED",
+				message: `The author runtime refused the configuration folder ${folder} with ${made.status}.`,
+			};
+		}
+	}
+	for (const name of names) {
+		const bytes = await readFile(join(configsRoot, name));
+		const form = new FormData();
+		form.append("*", new Blob([new Uint8Array(bytes)]), name);
+		const handed = await fetch(`${base}/apps/slingshot-agent/osgiconfig/config/`, {
+			method: "POST",
+			headers,
+			body: form,
+		});
+		if (handed.status >= 400) {
+			return {
+				ok: false,
+				reason: "INSTALL_FAILED",
+				message: `The author runtime refused service configuration ${name} with ${handed.status}.`,
+			};
+		}
+	}
+	return { ok: true };
+}
+
+// The agent repository this run's bundle jar was built from. The agent side's
+// pinning names that repository, so the configuration bytes are read from it
+// rather than restated here.
+function agentRepositoryRoot(): string {
+	return process.env.SLINGSHOT_AGENT_ROOT ?? "/home/koraytaylan/Workspace/slingshot/slingshot-agent";
+}
 
 // The console's bundle listing: every bundle must report Active. The listing
 // names each bundle's state, so a refusal can say what the bundle actually
@@ -233,6 +313,7 @@ export async function startSlingRuntime(
 		labelKey: options.values.label.key,
 		labelValue: options.labelValue,
 		network: options.network,
+		name: AUTHOR_RUNTIME_NAME,
 		publish: [port],
 		command: [],
 		probe: () => consoleAnswers(port),
@@ -249,6 +330,12 @@ export async function startSlingRuntime(
 		return started as ContainerRefusal;
 	}
 	const handle: ContainerHandle = started;
+	const configured = await installStateConfiguration(port, options);
+	if (!configured.ok) {
+		await handle.stop(options.values.stop.graceSeconds);
+		await handle.remove();
+		return configured;
+	}
 	const installed = await installBundle(port, options);
 	if (!installed.ok) {
 		await handle.stop(options.values.stop.graceSeconds);
@@ -278,7 +365,56 @@ export async function startSlingRuntime(
 		// remains capturable for the run report.
 		return active;
 	}
+	// Active is the bundle's state, not its servlets'. The state route is the
+	// first thing every scenario and every reconciliation lookup reads, and a
+	// lookup nobody can read yet answers 500 rather than the nothing-there
+	// 404, so the run waits until the route answers the way the agent's own
+	// tier requires before any scenario runs.
+	const stateReady = await awaitStateRoute(port, options);
+	if (!stateReady.ok) {
+		return stateReady;
+	}
 	return { ok: true, handle, port };
+}
+
+// Waits until the agent's lookup route answers its nothing-there status for
+// an operation the store has never held, which proves the service-user
+// configuration and the bundle's state access are both live.
+export async function awaitStateRoute(
+	port: number,
+	options: StartSlingRuntimeOptions,
+): Promise<AwaitActiveOutcome> {
+	const base = options.consoleBase ?? `http://127.0.0.1:${port}`;
+	const auth = Buffer.from(
+		`${options.consoleUsername}:${options.consolePassword}`,
+		"utf8",
+	).toString("base64");
+	const absent = "0".repeat(64);
+	const intervalMs = options.values.readiness.pollIntervalSeconds * 1000;
+	while (true) {
+		try {
+			const response = await fetch(
+				`${base}/bin/slingshot/agent/snapshot?agent_operation_identifier=${absent}`,
+				{
+					headers: { authorization: `Basic ${auth}` },
+					signal: AbortSignal.timeout(10_000),
+				},
+			);
+			if (response.status === 404) {
+				return { ok: true };
+			}
+		} catch {
+			// A route not yet registered is a wait, not a failure.
+		}
+		if (options.activeDeadline.getTime() - Date.now() <= 0) {
+			return {
+				ok: false,
+				reason: "NEVER_BECAME_READY",
+				message: `The agent's lookup route never answered its nothing-there status by the deadline ${options.activeDeadline.toISOString()}; the state configuration is the thing to check.`,
+			};
+		}
+		await Bun.sleep(Math.min(intervalMs, Math.max(1, options.activeDeadline.getTime() - Date.now())));
+	}
 }
 
 // Reads META-INF/MANIFEST.MF out of the jar through a proper zip parse: a
