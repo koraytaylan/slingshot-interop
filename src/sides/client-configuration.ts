@@ -258,11 +258,22 @@ export async function writeScratchHome(
 	return { homePath, rootPath, profileName: options.profileName, environmentName: options.environment };
 }
 
+// The name the author runtime answers to on the run's network. The severance
+// proxy forwards to it, and the client's profiles address it directly in the
+// scenario that proves a refusal, so the container carries this name: without
+// one it is reachable only by the identifier Podman generated, which no
+// profile names and no upstream resolves.
+export const AUTHOR_RUNTIME_NAME = "tier-sling";
+
+// The name the severance proxy answers to on the run's network, which is what
+// every profile's author address names.
+export const SEVERANCE_PROXY_NAME = "severance-proxy";
+
 // The address the profile points at in a real run: the severance proxy's
 // port on the run's network, because every byte the client sends can be
 // severed on command. A cleartext author off loopback is exactly what the
 // client's own allow_insecure_author_transport field, which the serialized
 // environment always declares, is what permits.
 export function authorAddress(values: Values): string {
-	return `${authorAddressScheme}severance-proxy:${values.ports.proxy}`;
+	return `${authorAddressScheme}${SEVERANCE_PROXY_NAME}:${values.ports.proxy}`;
 }

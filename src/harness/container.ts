@@ -19,9 +19,18 @@ export type StartContainerOptions = {
 	readonly labelKey: string;
 	readonly labelValue: string;
 	readonly network: string;
+	// The name the container answers to on the run's network, which is what
+	// another container in the run resolves it by. A container without one is
+	// reachable only by the identifier Podman generated for it, and every side
+	// another side must reach is named by its name in a profile or an
+	// environment, so each of those carries one.
+	readonly name?: string;
 	// The container ports to publish, mapped as-is to the same host port. The
 	// caller declares the ports it needs and no other port is published.
 	readonly publish?: readonly number[];
+	// The environment the container is started with, one KEY=VALUE per
+	// entry, each passed to Podman as its own -e argument.
+	readonly env?: readonly string[];
 	readonly command: readonly string[];
 	// The readiness probe, called with the started container's id; a resolved
 	// true means ready.
@@ -172,8 +181,14 @@ export async function startContainer(
 		"--network",
 		options.network,
 	];
+	if (options.name !== undefined) {
+		runArgs.push("--name", options.name);
+	}
 	for (const port of options.publish ?? []) {
 		runArgs.push("-p", `${port}:${port}`);
+	}
+	for (const entry of options.env ?? []) {
+		runArgs.push("-e", entry);
 	}
 	runArgs.push(options.image, ...options.command);
 

@@ -1,14 +1,27 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright 2026 Koray Taylan Davgana
 
-import { execInContainer, parseMachineEnvelope, type StartClientRunnerOptions } from "../sides/client-runtime.ts";
-import { type ContainerHandle } from "../harness/container.ts";
-import { serializeProfile, sha256OfBytes, serializeSnapshot, profileDirectoryName, profileFileNameSuffix, configurationSnapshotFileName, selectionFileName } from "../sides/client-configuration.ts";
+// The severed-submission scenario: the answer to a submission never comes
+// back. The client reports the operation as retained by its receipt — the
+// one outcome it can prove at that moment — then settles the unknown
+// through its own observation, and the agent's own record proves exactly
+// one admission and exactly one effect. What it may never do is invent a
+// clean failure for work the agent completed: resubmission would double
+// the effect.
+
+import { chmod } from "node:fs/promises";
+import { agentAuthorization, envelope, invoke, machineArguments, resolveAgentOperationIdentifier, runner, waitTerminal } from "./support.ts";
+import { severanceControlPort } from "../run/orchestration.ts";
+import { serializeProfile, sha256OfBytes, serializeSnapshot, profileDirectoryName, profileFileNameSuffix, configurationSnapshotFileName, type SnapshotSource } from "../sides/client-configuration.ts";
 import { join } from "node:path";
+import type { StartClientRunnerOptions } from "../sides/client-runtime.ts";
+import type { ContainerHandle } from "../harness/container.ts";
 
 export const scenario = {
 	async run(handle: ContainerHandle, options: StartClientRunnerOptions) {
-		const profileName = "severed-profile";
+		// 1. A profile pointing at the severance proxy, written through the
+		// client's own configuration mechanism.
+		const profileName = `severed-${options.labelValue}`;
 		const profile = {
 			name: profileName,
 			environment: options.scratchHome.environmentName,
@@ -20,117 +33,145 @@ export const scenario = {
 		};
 		const profileContent = serializeProfile(profile);
 		const profilePath = join(options.scratchHome.rootPath, profileDirectoryName, `${profileName}${profileFileNameSuffix}`);
-		await Bun.write(profilePath, profileContent);
+		await Bun.write(profilePath, profileContent, { mode: 0o600 });
+		// Bun.write ignores its mode option, so the owner-only bits the
+		// client's own filesystem authority requires are set explicitly.
+		await chmod(profilePath, 0o600);
+		await updateSnapshot(options);
 
-		// Update configuration snapshot to include the new profile
-		const sources = [];
-		const defaultProfilePath = join(options.scratchHome.rootPath, profileDirectoryName, `${options.scratchHome.profileName}${profileFileNameSuffix}`);
-		const defaultProfileBytes = await Bun.file(defaultProfilePath).bytes();
-		sources.push({ reference: `${profileDirectoryName}/${options.scratchHome.profileName}${profileFileNameSuffix}`, sha256: sha256OfBytes(defaultProfileBytes) });
+		const machine = machineArguments(options, profileName);
+		const parent = `/content/interop/${options.labelValue}`;
+		const folderName = "severed";
+		const folderPath = `${parent}/${folderName}`;
+		const title = `Severed by ${options.labelValue}`;
+		const operationKey = `${options.labelValue}-severed`;
 
-		const selectionPath = join(options.scratchHome.rootPath, selectionFileName);
-		const selectionBytes = await Bun.file(selectionPath).bytes();
-		sources.push({ reference: selectionFileName, sha256: sha256OfBytes(selectionBytes) });
-
-		const severedProfileBytes = new TextEncoder().encode(profileContent);
-		sources.push({ reference: `${profileDirectoryName}/${profileName}${profileFileNameSuffix}`, sha256: sha256OfBytes(severedProfileBytes) });
-
-		const snapshotContent = serializeSnapshot(sources);
-		await Bun.write(join(options.scratchHome.rootPath, configurationSnapshotFileName), snapshotContent);
-
-		const machine = [
-			"--machine",
-			"--runtime-root",
-			options.runtimeRoot,
-			"--profile",
-			profileName,
-			"--environment",
-			options.scratchHome.environmentName,
-		];
-		const runner = "/opt/slingshot/bin/slingshot";
-
-		// 0. Ensure daemon is running
-		const startRes = await execInContainer(handle.id, [runner, "daemon", "start", ...machine], options);
-		if (!startRes.ok || startRes.exitCode !== 0) {
-			return { ok: false, message: `Daemon start failed: ${startRes.message || startRes.stderr}` };
+		// 0. The daemon: the submission is the daemon's remote exchange, and
+		// the observation after the severance reads through it too.
+		const started = await invoke(handle, [runner(), ...machine, "daemon", "start"], options);
+		if (!started.ok) {
+			return { ok: false, message: `daemon start could not run: ${started.message}` };
+		}
+		if (started.exitCode !== 0) {
+			return { ok: false, message: `daemon start exited ${started.exitCode}: ${started.stderr}` };
 		}
 
-		const path = `/severed-test/${options.labelValue}`;
-		const content = `Content for ${options.labelValue}`;
-		const proxyControlPort = 8083;
-
-		// 1. Submit a write and arm the proxy concurrently to sever the response
-		// The "after the request body has left" requirement is met by delaying the arming.
-		const [writeRes] = await Promise.all([
-			execInContainer(handle.id, [runner, "write", ...machine, path, content], options),
-			(async () => {
-				await Bun.sleep(100); // Delay to allow the request body to leave the client
-				await fetch(`http://severance-proxy:${proxyControlPort}/arm/client`, { method: "POST" });
-			})(),
-		]);
-		
-		const writeEnv = parseMachineEnvelope(writeRes.stdout);
-		if (!writeEnv) {
-			return { ok: false, message: `Write did not return a machine envelope: ${writeRes.stdout}` };
+		// 2. Submit a write through the proxy, arming the client-side
+		// severance point before the daemon connects: the relay forwards the
+		// request it was handed, then severs the client-facing half, so the
+		// request reaches the agent and the answer never comes back.
+		const arm = fetch(`http://127.0.0.1:${proxyControlPort(options)}/arm/client`, { method: "POST", signal: AbortSignal.timeout(10_000) });
+		const submitted = await invoke(handle, [
+			runner(), ...machine, "create_asset_folder",
+			"--operation-key", operationKey,
+			"--detach",
+			"--path", parent,
+			"--name", folderName,
+			"--title", title,
+		], options);
+		const armed = await arm;
+		if (!armed.ok) {
+			return { ok: false, message: `arming the proxy failed: ${armed.status} ${await armed.text()}` };
+		}
+		if (!submitted.ok) {
+			return { ok: false, message: `the severed submission could not run: ${submitted.message}` };
+		}
+		if (submitted.exitCode !== 0) {
+			return { ok: false, message: `the severed submission exited ${submitted.exitCode}: ${submitted.stderr}` };
 		}
 
-		// Assert the client reports unknown_outcome with cause
-		if (writeEnv.outcome !== "unknown_outcome") {
-			return { ok: false, message: `Expected outcome unknown_outcome, got ${writeEnv.outcome}` };
+		// 3. The submission answers with its receipt: the daemon retains the
+		// operation before the remote exchange, so the answer it can prove
+		// at that moment is exactly what an accepted submission answers —
+		// never a success for the work itself, whose outcome is the one
+		// thing the severed transport cannot carry back.
+		const receipt = envelope(submitted.stdout, "the severed submission");
+		if (receipt.ok === false) {
+			return receipt;
+		}
+		if (receipt.outcome !== "operation_receipt") {
+			return { ok: false, message: `the severed submission answered ${String(receipt.outcome)} instead of a receipt: ${submitted.stdout}` };
+		}
+		const operationIdentifier = receipt.operation_identifier;
+		if (typeof operationIdentifier !== "string" || operationIdentifier.length === 0) {
+			return { ok: false, message: `the severed submission named no operation: ${submitted.stdout}` };
 		}
 
-		const cause = (writeEnv as any).cause;
-		if (!cause) {
-			return { ok: false, message: `Unknown outcome did not report its cause: ${writeRes.stdout}` };
+		// 4. Observe the operation through the client afterwards: the
+		// exchange came apart mid-answer, so the operation parks at
+		// recovery_required rather than at a clean answer — the proxy
+		// stays armed, so every lookup connection the daemon opens is
+		// severed on its answer half too, and that is the honest state an
+		// unreachable agent leaves an accepted write in. What the client
+		// may never report is a terminal error for work the agent
+		// completed: resubmission would double the effect.
+		const parked = await waitTerminal(handle, machine, operationIdentifier, options, options.values.readiness.harnessSeconds * 1000);
+		if (!parked.ok) {
+			return parked;
+		}
+		if (parked.envelope.outcome === "operation_terminal_error") {
+			return { ok: false, message: `the severed submission was reported as a terminal error, inventing a failure the agent never reported: ${JSON.stringify(parked.envelope)}` };
+		}
+		if (parked.envelope.outcome !== "operation_recovery_required") {
+			return { ok: false, message: `the severed submission ended as ${String(parked.envelope.outcome)} instead of the recovery park: ${JSON.stringify(parked.envelope)}` };
 		}
 
-		const opKey = (writeEnv as any).operation_key;
-		if (!opKey) {
-			return { ok: false, message: `Write did not return an operation key: ${writeRes.stdout}` };
+		// 5. Exactly one admission and exactly one effect, proved from the
+		// agent's own route: the record names the operation once as
+		// succeeded, and the created content exists — while the client's
+		// own view honestly holds the recovery park. The route's query
+		// member is the agent-side identifier the client derived at
+		// submission, not the receipt's local one.
+		const resolved = await resolveAgentOperationIdentifier(options, profileName, operationIdentifier);
+		if (!resolved.ok) {
+			return resolved;
 		}
-
-		// 3. Reconcile through lookup: the operation should be completed
-		const waitRes = await execInContainer(handle.id, [runner, "operation", "wait", ...machine, opKey], options);
-		const waitEnv = parseMachineEnvelope(waitRes.stdout);
-		if (!waitEnv || waitEnv.state !== "completed") {
-			return { ok: false, message: `Reconciliation failed: operation ${opKey} state is ${waitEnv?.state || "unknown"}` };
+		const lookup = await fetch(
+			`http://127.0.0.1:${options.values.ports.author}/bin/slingshot/agent/snapshot?agent_operation_identifier=${encodeURIComponent(resolved.agentOperationIdentifier)}`,
+			{ headers: { authorization: agentAuthorization("admin", "admin") }, signal: AbortSignal.timeout(10_000) },
+		);
+		if (!lookup.ok) {
+			return { ok: false, message: `the agent's lookup route answered ${lookup.status} for ${operationIdentifier}, and reconciliation needs the operation there` };
 		}
-
-		// 4. Assert exactly one admission and one effect on the agent
-		const authorPort = options.values.ports.author;
-		const auth = Buffer.from("admin:admin", "utf8").toString("base64");
-		const snapshotUrl = `http://127.0.0.1:${authorPort}/system/snapshot`;
-
-		const snapshotRes = await fetch(snapshotUrl, {
-			headers: { authorization: `Basic ${auth}` },
+		const snapshot = await lookup.json() as Record<string, unknown>;
+		if (snapshot.kind !== "succeeded") {
+			return { ok: false, message: `the agent's record names ${String(snapshot.kind)} for ${operationKey} while the submission's answer was destroyed in transit: ${JSON.stringify(snapshot)}` };
+		}
+		const content = await fetch(`http://127.0.0.1:${options.values.ports.author}${folderPath}`, {
+			headers: { authorization: agentAuthorization("admin", "admin") },
 			signal: AbortSignal.timeout(10_000),
 		});
-
-		if (!snapshotRes.ok) {
-			return { ok: false, message: `Agent snapshot route failed: ${snapshotRes.status} ${snapshotRes.statusText}` };
+		if (!content.ok) {
+			return { ok: false, message: `the created content does not answer on the agent: ${content.status} ${content.statusText}` };
 		}
-
-		const snapshotData = await snapshotRes.json();
-		const opSnapshots = (snapshotData.operations ?? []).filter((op: any) => op.key === opKey);
-		if (opSnapshots.length !== 1) {
-			return { ok: false, message: `Expected exactly one admitted operation for ${opKey}, found ${opSnapshots.length}` };
-		}
-
-		// Check for the created content
-		const contentRes = await fetch(`http://127.0.0.1:${authorPort}/content${path}`, {
-			headers: { authorization: `Basic ${auth}` },
-			signal: AbortSignal.timeout(10_000),
-		});
-
-		if (!contentRes.ok) {
-			return { ok: false, message: `Content should exist: ${contentRes.status} ${contentRes.statusText}` };
-		}
-
-		const actualContent = await contentRes.text();
-		if (actualContent !== content) {
-			return { ok: false, message: `Content mismatch: expected ${content}, got ${actualContent}` };
-		}
-
-		return { ok: true, message: "Severed submission scenario passed" };
+		return { ok: true, message: "severed submission: answered by receipt, parked at recovery while the agent's record proves the completed effect, exactly one admission" };
 	},
 };
+
+// The proxy's control listener is on the port the values name; the forward
+// listener is the one the profile points at. The control port is published
+// to the host mapped as-is, so the harness arms the proxy through the
+// published port — the run's network is not reachable by name from the
+// host side.
+function proxyControlPort(options: StartClientRunnerOptions): number {
+	return severanceControlPort(options.values);
+}
+
+// The configuration snapshot must name every source the root carries, with
+// the digest of its bytes. The profile is written before this runs, so the
+// scan already holds it: pushing it again would name one source twice,
+// which the client's own configuration validation refuses.
+async function updateSnapshot(options: StartClientRunnerOptions): Promise<void> {
+	const sources: SnapshotSource[] = [];
+	const rootPath = options.scratchHome.rootPath;
+	for (const reference of await Array.fromAsync(new Bun.Glob("**/*").scan({ cwd: rootPath, onlyFiles: true }))) {
+		if (reference === configurationSnapshotFileName) {
+			continue;
+		}
+		const bytes = await Bun.file(join(rootPath, reference)).bytes();
+		sources.push({ reference, sha256: sha256OfBytes(bytes) });
+	}
+	await Bun.write(join(rootPath, configurationSnapshotFileName), serializeSnapshot(sources), { mode: 0o600 });
+	// Bun.write ignores its mode option; the snapshot must be owner-only too.
+	await chmod(join(rootPath, configurationSnapshotFileName), 0o600);
+}

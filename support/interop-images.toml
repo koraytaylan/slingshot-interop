@@ -22,7 +22,7 @@ tag = "pinned"
 # the build and is explicitly absent until then, like a released slot: the
 # gate refuses an absent build by naming the preparation command, and this
 # file stays the one place the built image is named.
-identifier = "sha256:5fff136e852d26da64650c87d0ae849cefabea5a4f9b01e19748b630aa9e7fa0"
+identifier = "sha256:f9cc75bd927165d5004d56ac5b569b8c03fab0a100551690d98d7a886838ad6f"
 
 [tier-sling]
 name = "localhost/slingshot-interop-tier-sling"

@@ -8,7 +8,7 @@
 // A run refuses if either side is unresolved, naming the owner's steps for the
 // fix, and starts nothing.
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readValues, type Values } from "../harness/values.ts";
@@ -27,21 +27,33 @@ import {
 	verifyReleaseArchive,
 	extractExecutable,
 	startClientRunner,
-	writeScratchHome,
 	type ClientRunnerHandle,
 	type VerifiedArchiveOutcome,
 	type StartClientRunnerOptions,
 } from "../sides/client-runtime.ts";
-import { authorAddress } from "../sides/client-configuration.ts";
+import {
+AUTHOR_RUNTIME_NAME,
+SEVERANCE_PROXY_NAME,
+authorAddress,
+writeScratchHome,
+} from "../sides/client-configuration.ts";
 import {
 	createNetwork,
 	removeNetwork,
+	startContainer,
 	checkForLeaks,
 	type ContainerHandle,
 } from "../harness/container.ts";
 import { runPodman } from "../harness/podman.ts";
 import { readdir } from "node:fs/promises";
-import { extname } from "node:path";
+
+// The proxy's control listener sits one port above its forwarding listener:
+// the forwarding port is the one profiles point at, the control port is the
+// one the harness arms through, and the pair is fixed by the values so no
+// caller picks its own.
+export function severanceControlPort(values: Values): number {
+	return values.ports.proxy + 1;
+}
 
 
 export type OrchestrationOutcome =
@@ -145,7 +157,7 @@ export async function runInterop(
 			labelValue,
 			consoleDeadline: new Date(Date.now() + values.readiness.harnessSeconds * 1000),
 			activeDeadline: new Date(Date.now() + values.readiness.publishedRuntimeSeconds * 1000),
-			bundleJarPath: slingshot.path,
+			bundleJarPath: agent.path,
 			consoleUsername: "admin",
 			consolePassword: "admin",
 			captureDirectory: workDirectory,
@@ -157,10 +169,52 @@ export async function runInterop(
 		}
 		handles.push(authorRuntime.handle);
 
+		// 4b. Start the severance proxy: the forwarding listener points at
+		// the author runtime, and its control listener is how a scenario
+		// arms a severance point. Its readiness is its own entrypoint having
+		// printed its listening line.
+		const severanceProxy = await startContainer({
+			image: options.images["severance-proxy"].identifier,
+			labelKey: values.label.key,
+			labelValue,
+			network: network.name,
+			name: SEVERANCE_PROXY_NAME,
+			publish: [values.ports.proxy, severanceControlPort(values)],
+			env: [
+				`SEVERANCE_LISTEN_PORT=${values.ports.proxy}`,
+				`SEVERANCE_CONTROL_PORT=${severanceControlPort(values)}`,
+				`SEVERANCE_UPSTREAM_HOST=${AUTHOR_RUNTIME_NAME}`,
+				`SEVERANCE_UPSTREAM_PORT=${values.ports.author}`,
+			],
+			command: [],
+			probe: async (id) => {
+				const logged = await runPodman(["logs", id], {
+					captureLimitBytes: values.capture.maximumBytes,
+					captureDirectory: workDirectory,
+					...(options.executable !== undefined ? { executable: options.executable } : {}),
+				});
+				if (!logged.ok) {
+					return false;
+				}
+				const printed = await readFile(logged.stdoutPath, "utf8");
+				return printed.includes(`listening on ${values.ports.proxy}`);
+			},
+			probeIntervalSeconds: values.readiness.pollIntervalSeconds,
+			deadline: new Date(Date.now() + values.readiness.harnessSeconds * 1000),
+			stopGraceSeconds: values.stop.graceSeconds,
+			captureLimitBytes: values.capture.maximumBytes,
+			captureDirectory: workDirectory,
+			executable: options.executable,
+		});
+		if (!severanceProxy.ok) {
+			throw new Error(`Severance proxy failed to start: ${severanceProxy.message}`);
+		}
+		handles.push(severanceProxy);
+
 		// 5. Start client runner
 		const archiveVerified = await verifyReleaseArchive(
-			agent.path,
-			agent.digest,
+			slingshot.path,
+			slingshot.digest,
 		);
 		if (!archiveVerified.ok) {
 			throw new Error(`Client archive verification failed: ${archiveVerified.message}`);
@@ -204,7 +258,7 @@ export async function runInterop(
 		const scenariosDir = join(baseDirectory, "src/scenarios");
 		const files = await readdir(scenariosDir);
 		const scenarioFiles = files
-			.filter((f) => f !== "README.md" && extname(f) === ".ts")
+			.filter((f) => f !== "README.md" && f.endsWith(".scenario.ts"))
 			.sort();
 
 		for (const file of scenarioFiles) {
@@ -231,9 +285,6 @@ export async function runInterop(
 			);
 
 			scenarioOutcomes.push({ file, ok: outcome.ok, message: outcome.message });
-			if (!outcome.ok) {
-				throw new Error(`Scenario ${file} failed: ${outcome.message}`);
-			}
 		}
 
 		const reportLines = [
