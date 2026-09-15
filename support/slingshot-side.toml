@@ -42,11 +42,11 @@ path = "/tmp/interop-candidate/slingshot-x86_64-unknown-linux-gnu.tar.gz"
 # Reason: the digest of the candidate bytes as the holder built them, so a
 # run proves the bytes on disk are the bytes the holder acknowledged; empty
 # until a holder supplies candidate bytes.
-digest = "c6936adbfe3e8cc36448595276e445b272f6d8cad2ddfec5ec65e5d918257383"
+digest = "174e7e58cd346878c17df5350fcd2f117b78b2526cf056aeae0f8348022f89d0"
 
 # Reason: the exact commit the candidate was built from, so every result
 # names the source it was about; empty until a holder supplies a candidate.
-commit = "012b2722efa4f95a08571c22c0b9fca4b9b56062"
+commit = "61f7300fb62140b7d7039e54e21cd545dfa2eb8f"
 
 # Reason: the holder's acknowledgement that these candidate bytes were built
 # in the sibling's own verified environment; only the holder sets it, and a
