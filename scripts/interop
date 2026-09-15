@@ -5,6 +5,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { runInterop } from "../src/run/orchestration.ts";
+import { stderrProgress } from "../src/run/progress.ts";
 import { readSideDocument, resolveSide } from "../src/sides/pinning.ts";
 import { writeReport } from "../src/run/report.ts";
 
@@ -29,7 +30,7 @@ const outcome = await runInterop(baseDirectory, {
 	// it has finished, so a reader watching a terminal needs the steps as they
 	// happen; keeping them off standard output leaves the report the only
 	// thing on it, which is what something parsing this command reads.
-	progress: (line) => console.error(line),
+	progress: stderrProgress,
 });
 
 if (!outcome.ok) {
