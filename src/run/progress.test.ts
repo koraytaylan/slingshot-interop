@@ -9,7 +9,55 @@
 // the lines rather than on timing.
 
 import { describe, expect, test } from "bun:test";
-import { WAIT_NOTICE_SECONDS, elapsedSeconds, phases, silentProgress, whileWaiting } from "./progress.ts";
+import {
+	WAIT_NOTICE_SECONDS,
+	elapsedSeconds,
+	phases,
+	silentProgress,
+	stderrProgress,
+	whileWaiting,
+} from "./progress.ts";
+
+describe("where a step is written", () => {
+	test("a step is written to standard error, and the report keeps standard output", () => {
+		// The split a caller relies on: `interop > report.txt` has to name
+		// exactly the report, so nothing a watchful reader needs may land on
+		// standard output.
+		const original = process.stderr.write;
+		const written: string[] = [];
+		process.stderr.write = ((chunk: string | Uint8Array) => {
+			written.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+			return true;
+		}) as typeof process.stderr.write;
+		try {
+			stderrProgress("a step");
+		} finally {
+			process.stderr.write = original;
+		}
+		expect(written.join("")).toBe("a step\n");
+	});
+
+	test("a step carries no colour of its own", () => {
+		// Every line this stream carries is a step of a healthy run as often as
+		// it is a failure, so painting all of them the error colour would tell a
+		// reader that something had gone wrong when nothing had. The writer owes
+		// no escape of its own; what a terminal adds to the stream is the
+		// terminal's business, and `console.error` is what invites it.
+		const original = process.stderr.write;
+		const written: string[] = [];
+		process.stderr.write = ((chunk: string | Uint8Array) => {
+			written.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+			return true;
+		}) as typeof process.stderr.write;
+		try {
+			stderrProgress("author runtime ready");
+		} finally {
+			process.stderr.write = original;
+		}
+		// eslint-disable-next-line no-control-regex
+		expect(written.join("")).not.toMatch(/\u001b\[/);
+	});
+});
 
 describe("a run's progress", () => {
 	test("a sink nobody supplies records nothing and costs nothing", async () => {

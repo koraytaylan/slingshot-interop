@@ -24,6 +24,24 @@ export type ProgressSink = (line: string) => void;
 // Where progress goes when nobody asked for any.
 export const silentProgress: ProgressSink = () => {};
 
+// Writes progress to standard error, one line per call and nothing else.
+//
+// Standard error rather than standard output because a run has two readers with
+// two different needs: the report is a document something parses, and these
+// lines are for somebody watching. Keeping the report alone on standard output
+// is what lets `interop > report.txt` name exactly the report, and it is the
+// convention this entry point already had - its refusals already go to standard
+// error.
+//
+// Written with `process.stderr.write` rather than `console.error` deliberately.
+// `console.error` is the failure writer, and in a terminal its own formatting
+// paints the whole line in the error colour: every step of a healthy run comes
+// out red, which tells a reader that something has gone wrong when nothing has.
+// This stream carries steps as well as refusals, so it is written raw.
+export const stderrProgress: ProgressSink = (line) => {
+	process.stderr.write(`${line}\n`);
+};
+
 // How long a wait runs before it says again that it is still waiting.
 //
 // A wait that has not finished is the one thing a watching reader cannot tell
