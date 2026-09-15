@@ -10,7 +10,7 @@
 // registers, so what this scenario proves is the real round trip, not a
 // planting.
 
-import { agentAuthorization, envelope, invoke, machineArguments, resolveAgentOperationIdentifier, runner, waitTerminal } from "./support.ts";
+import { agentSnapshot, envelope, invoke, machineArguments, resolveAgentOperationIdentifier, runner, waitTerminal } from "./support.ts";
 import type { StartClientRunnerOptions } from "../sides/client-runtime.ts";
 import type { ContainerHandle } from "../harness/container.ts";
 
@@ -21,7 +21,6 @@ export const scenario = {
 		const folderName = "written";
 		const folderPath = `${parent}/${folderName}`;
 		const title = `Written by ${options.labelValue}`;
-		const textProperty = `Text declared by ${options.labelValue}`;
 
 		// 0. The daemon: the write is the daemon's remote exchange. An
 		// explicit start converges regardless of which scenario ran first.
@@ -75,7 +74,12 @@ export const scenario = {
 		}
 
 		// 3. Load the same path back and assert the read's answer carries
-		// what the write declared.
+		// what the write declared. A submission is answered with its receipt
+		// — the client's own contract is that a machine render writes exactly
+		// one envelope, and a submission's envelope is the acknowledgement of
+		// work taken rather than the work's answer — so the operation is then
+		// waited to its terminal disposition, which is where the result
+		// arrives.
 		const loaded = await invoke(handle, [
 			runner(), ...machine, "load_content_as_json",
 			"--operation-key", `${options.labelValue}-write-read-read`,
@@ -88,22 +92,33 @@ export const scenario = {
 		if (loaded.exitCode !== 0) {
 			return { ok: false, message: `load_content_as_json exited ${loaded.exitCode}: ${loaded.stderr}` };
 		}
-		const answer = envelope(loaded.stdout, "load_content_as_json");
-		if (answer.ok === false) {
-			return answer;
+		const submitted = envelope(loaded.stdout, "load_content_as_json");
+		if (submitted.ok === false) {
+			return submitted;
 		}
-		if (answer.outcome !== "operation_result") {
-			return { ok: false, message: `load_content_as_json answered ${String(answer.outcome)} instead of a result: ${loaded.stdout}` };
+		if (submitted.outcome !== "operation_receipt") {
+			return { ok: false, message: `load_content_as_json answered ${String(submitted.outcome)} instead of its receipt: ${loaded.stdout}` };
 		}
-		const read = answer.result as Record<string, unknown> | undefined;
+		const readOperation = submitted.operation_identifier;
+		if (typeof readOperation !== "string" || readOperation.length === 0) {
+			return { ok: false, message: `load_content_as_json named no operation: ${loaded.stdout}` };
+		}
+		const read = await waitTerminal(handle, machine, readOperation, options, waitBudget(options));
+		if (!read.ok) {
+			return read;
+		}
+		if (read.envelope.outcome !== "operation_result") {
+			return { ok: false, message: `load_content_as_json ended as ${JSON.stringify(read.envelope)} instead of a result` };
+		}
+		const answer = read.envelope.result as Record<string, unknown> | undefined;
 		// The read's answer carries the loaded node itself, and the document
 		// below it is the agent's own rendering: one properties table keyed
 		// by name, with every value typed. The write's declaration must be
 		// equal in the read's answer.
-		const document = readMapping(read, ["document"]);
+		const document = readMapping(answer, ["document"]);
 		const properties = readMapping(document, ["properties"]);
 		if (properties === undefined) {
-			return { ok: false, message: `load_content_as_json carried no properties table: ${loaded.stdout}` };
+			return { ok: false, message: `load_content_as_json carried no properties table: ${JSON.stringify(read.envelope).slice(0, 2000)}` };
 		}
 		const readTitle = propertyValue(properties, "jcr:title");
 		if (readTitle !== title) {
@@ -122,16 +137,13 @@ export const scenario = {
 		if (!resolved.ok) {
 			return resolved;
 		}
-		const lookup = await fetch(
-			`http://127.0.0.1:${options.values.ports.author}/bin/slingshot/agent/snapshot?agent_operation_identifier=${encodeURIComponent(resolved.agentOperationIdentifier)}`,
-			{ headers: { authorization: agentAuthorization("admin", "admin") }, signal: AbortSignal.timeout(10_000) },
-		);
+		const lookup = await agentSnapshot(options, resolved.agentOperationIdentifier);
 		if (!lookup.ok) {
-			return { ok: false, message: `the agent's lookup route answered ${lookup.status} for ${operationIdentifier}` };
+			return lookup;
 		}
-		const snapshot = await lookup.json() as Record<string, unknown>;
+		const snapshot = lookup.snapshot;
 		if (snapshot.kind !== "succeeded") {
-			return { ok: false, message: `the agent's own record names ${String(snapshot.kind)} for ${operationIdentifier}, and the client reported success: ${JSON.stringify(snapshot)}` };
+			return { ok: false, message: `the agent's own record names ${snapshot.kind} for ${operationIdentifier}, and the client reported success: ${JSON.stringify(snapshot)}` };
 		}
 		return { ok: true, message: "write-then-read: the created asset folder was read back with the write's declaration equal to the read's answer" };
 	},

@@ -48,6 +48,13 @@ export type RunPodmanOptions = {
 	// directory; callers that want the captures cleaned up pass their own and
 	// remove it themselves.
 	readonly captureDirectory?: string;
+	// The bytes the command's standard input carries, if the command takes
+	// any. Absent means the input is the empty stream and is closed
+	// immediately, which is what every command that asks nothing of a caller
+	// gets. A command that reads its input — a protocol server answering
+	// request lines — is driven by passing them here, so no second invocation
+	// path exists and the capture bounds above still apply to its answers.
+	readonly stdinBytes?: Uint8Array;
 };
 
 const executableFallback = "podman";
@@ -117,7 +124,10 @@ export async function runPodman(
 
 	const child = Bun.spawn({
 		cmd: [...command],
-		stdin: "ignore",
+		// A Blob's bytes are handed to the child and the stream then ends,
+		// which is what tells a server reading its input that it is done. An
+		// invocation carrying no bytes gets the empty stream, unchanged.
+		stdin: options.stdinBytes === undefined ? "ignore" : new Blob([options.stdinBytes]),
 		stdout: "pipe",
 		stderr: "pipe",
 	});

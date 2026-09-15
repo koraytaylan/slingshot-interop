@@ -11,7 +11,7 @@ import { Database } from "bun:sqlite";
 import { copyFile, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execInContainer, parseMachineEnvelope, runnerExecutablePath, type ExecResult, type StartClientRunnerOptions } from "../sides/client-runtime.ts";
+import { execInContainer, parseMachineEnvelope, runnerExecutablePath, type ExecResult, type MachineEnvelope, type StartClientRunnerOptions } from "../sides/client-runtime.ts";
 import type { ContainerHandle } from "../harness/container.ts";
 
 // The global shape every catalog invocation carries, machine-rendered,
@@ -38,8 +38,8 @@ export function runner(): string {
 // scenario failure.
 export type Invocation = { readonly ok: true; readonly exitCode: number; readonly stdout: string; readonly stderr: string };
 
-export async function invoke(handle: ContainerHandle, command: readonly string[], options: StartClientRunnerOptions): Promise<Invocation | { readonly ok: false; readonly message: string }> {
-	const outcome: ExecResult = await execInContainer(handle.id, command, options);
+export async function invoke(handle: ContainerHandle, command: readonly string[], options: StartClientRunnerOptions, stdinBytes?: Uint8Array): Promise<Invocation | { readonly ok: false; readonly message: string }> {
+	const outcome: ExecResult = await execInContainer(handle.id, command, options, stdinBytes);
 	if (!outcome.ok) {
 		return { ok: false, message: outcome.message };
 	}
@@ -47,13 +47,18 @@ export async function invoke(handle: ContainerHandle, command: readonly string[]
 }
 
 // Reads the first machine envelope of one captured stdout, as its own
-// failure when there is none.
-export function envelope(stdout: string, what: string): Record<string, unknown> | { readonly ok: false; readonly message: string } {
+// failure when there is none. The success branch spreads the parsed envelope
+// over its own `ok`, so the caller's guard against `ok === false` narrows to
+// the envelope's declared members and a caller that never guarded is a type
+// error rather than an undefined read.
+export type EnvelopeRead = MachineEnvelope & { readonly ok: true };
+
+export function envelope(stdout: string, what: string): EnvelopeRead | { readonly ok: false; readonly message: string } {
 	const parsed = parseMachineEnvelope(stdout);
 	if (parsed === null) {
 		return { ok: false, message: `${what} wrote no machine envelope: ${stdout}` };
 	}
-	return parsed as unknown as Record<string, unknown>;
+	return { ...parsed, ok: true };
 }
 
 // Waits on one operation through the client's own observation leaf until
@@ -68,7 +73,7 @@ export function envelope(stdout: string, what: string): Record<string, unknown> 
 // the client fetches the operation's result and returns that envelope. A
 // status whose state is neither keeps the loop waiting.
 export type WaitOutcome =
-	| { readonly ok: true; readonly envelope: Record<string, unknown> }
+	| { readonly ok: true; readonly envelope: EnvelopeRead }
 	| { readonly ok: false; readonly message: string };
 
 export async function waitTerminal(handle: ContainerHandle, machine: readonly string[], operationIdentifier: string, options: StartClientRunnerOptions, deadlineMs: number): Promise<WaitOutcome> {
@@ -101,17 +106,17 @@ async function terminalAnswer(handle: ContainerHandle, machine: readonly string[
 	if (parsed.ok === false) {
 		return { ok: false, message: `operation-wait on its last answer: ${parsed.message}` };
 	}
-	const outcome = (parsed as Record<string, unknown>).outcome;
+	const outcome = parsed.outcome;
 	if (
 		outcome === "operation_result"
 		|| outcome === "operation_terminal_error"
 		|| outcome === "operation_recovery_required"
 		|| outcome === "structured_result_artifact_access"
 	) {
-		return { ok: true, envelope: parsed as Record<string, unknown> };
+		return { ok: true, envelope: parsed };
 	}
 	if (outcome === "operation_status") {
-		const state = (parsed as Record<string, unknown>).state;
+		const state = parsed.state;
 		if (state === "terminal" || state === "recovery_required") {
 			const fetched = await invoke(handle, [runner(), ...machine, "operation-result", "--operation", operationIdentifier], options);
 			if (!fetched.ok) {
@@ -130,16 +135,49 @@ function terminalEnvelope(answer: Invocation, what: string): WaitOutcome {
 	if (parsed.ok === false) {
 		return { ok: false, message: `${what} wrote no machine envelope: ${answer.stdout.slice(0, 800)}` };
 	}
-	const outcome = (parsed as Record<string, unknown>).outcome;
+	const outcome = parsed.outcome;
 	if (
 		outcome === "operation_result"
 		|| outcome === "operation_terminal_error"
 		|| outcome === "operation_recovery_required"
 		|| outcome === "structured_result_artifact_access"
 	) {
-		return { ok: true, envelope: parsed as Record<string, unknown> };
+		return { ok: true, envelope: parsed };
 	}
 	return { ok: false, message: `${what} answered ${JSON.stringify(parsed)} instead of a terminal envelope` };
+}
+
+// The agent's own snapshot document, as the lookup route answers it. The
+// member a scenario compares is declared, so a route that stopped writing it
+// is a compile-time absence rather than an undefined read: the whole point of
+// this read is that the agent's record agrees with what the client reported,
+// and a `kind` read off an index signature would compare `undefined` and
+// prove nothing.
+export type AgentSnapshot = {
+	readonly kind: string;
+	readonly generation?: number;
+	readonly terminal_result?: unknown;
+	readonly terminal_failure?: unknown;
+};
+
+// Reads one authenticated snapshot of the agent's own record, or a refusal
+// naming what the route answered instead.
+export async function agentSnapshot(
+	options: StartClientRunnerOptions,
+	agentOperationIdentifier: string,
+): Promise<{ readonly ok: true; readonly snapshot: AgentSnapshot } | { readonly ok: false; readonly message: string }> {
+	const response = await fetch(
+		`http://127.0.0.1:${options.values.ports.author}/bin/slingshot/agent/snapshot?agent_operation_identifier=${encodeURIComponent(agentOperationIdentifier)}`,
+		{ headers: { authorization: agentAuthorization("admin", "admin") }, signal: AbortSignal.timeout(10_000) },
+	);
+	if (!response.ok) {
+		return { ok: false, message: `the agent's lookup route answered ${response.status} for ${agentOperationIdentifier}` };
+	}
+	const snapshot = (await response.json()) as AgentSnapshot;
+	if (typeof snapshot.kind !== "string") {
+		return { ok: false, message: `the agent's lookup route answered a document naming no kind for ${agentOperationIdentifier}` };
+	}
+	return { ok: true, snapshot };
 }
 
 // The basic-auth credentials the run's agent accepts, spelled by the caller
@@ -182,9 +220,8 @@ export async function resolveAgentOperationIdentifier(options: StartClientRunner
 	}
 	const key = namespaceKey(profileName, options.scratchHome.environmentName);
 	const databasePath = join(targets, key, DATABASE_FILE_NAME);
-	let bytes: Buffer;
 	try {
-		bytes = await readFile(databasePath);
+		await readFile(databasePath);
 	} catch {
 		return { ok: false, message: `the daemon's operation database is not at ${databasePath} (its targets hold ${entries.slice(0, 5).join(", ")} or fewer): the daemon's record could not be read` };
 	}
@@ -214,6 +251,56 @@ export async function resolveAgentOperationIdentifier(options: StartClientRunner
 				return { ok: false, message: `the daemon's record names ${JSON.stringify(row.agent_operation_identifier)} for ${operationIdentifier}, which is not a derived agent identifier` };
 			}
 			return { ok: true, agentOperationIdentifier: row.agent_operation_identifier };
+		} finally {
+			database.close();
+		}
+	} finally {
+		await rm(scratch, { recursive: true, force: true });
+	}
+}
+
+export type LocalArtifactResolution =
+	| { readonly ok: true; readonly artifactIdentifier: string }
+	| { readonly ok: false; readonly message: string };
+
+// The local name the daemon bound one artifact slot to. A result's own
+// descriptor carries the name the agent chose, which the daemon treats as
+// opaque provenance: the artifact it publishes is named by the daemon's own
+// derivation over its installation, this target, this operation and the slot
+// (crates/slingshot-storage/src/artifact_store.rs, `ArtifactIdentifier::derive`).
+// The fetch leaf addresses the daemon's name, so it is read from the daemon's
+// own association row rather than from the agent's descriptor.
+export async function resolveLocalArtifactIdentifier(options: StartClientRunnerOptions, profileName: string, operationIdentifier: string, slot: string): Promise<LocalArtifactResolution> {
+	const homePath = options.scratchHome.homePath;
+	const targets = join(homePath, DAEMON_STATE_RELATIVE, TARGETS_DIRECTORY);
+	const key = namespaceKey(profileName, options.scratchHome.environmentName);
+	const databasePath = join(targets, key, DATABASE_FILE_NAME);
+	try {
+		await readFile(databasePath);
+	} catch {
+		return { ok: false, message: `the daemon's operation database is not at ${databasePath}: the daemon's record could not be read` };
+	}
+	const scratch = await mkdtemp(join(tmpdir(), "interop-sqlite-"));
+	try {
+		await copyFile(databasePath, join(scratch, DATABASE_FILE_NAME));
+		for (const sidecar of [`${DATABASE_FILE_NAME}-wal`, `${DATABASE_FILE_NAME}-shm`]) {
+			try {
+				await copyFile(join(databasePath, "..", sidecar), join(scratch, sidecar));
+			} catch {
+				// A database with no sidecar is a quiesced one: nothing to carry.
+			}
+		}
+		const database = new Database(join(scratch, DATABASE_FILE_NAME), { readonly: true });
+		try {
+			const row = database
+				.query<{ artifact_identifier: string }, [string, string]>(
+					"SELECT artifact_identifier FROM artifact_association WHERE operation_identifier = ? AND artifact_slot = ?",
+				)
+				.get(operationIdentifier, slot);
+			if (row === null || row === undefined) {
+				return { ok: false, message: `the daemon's record holds no artifact in slot ${slot} for ${operationIdentifier} in ${key}` };
+			}
+			return { ok: true, artifactIdentifier: row.artifact_identifier };
 		} finally {
 			database.close();
 		}

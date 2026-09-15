@@ -74,10 +74,10 @@ export const scenario = {
 		if (receipt.ok === false) {
 			return receipt;
 		}
-		if (receipt.outcome !== "operation_receipt") {
-			return { ok: false, message: `the refused submission answered ${String(receipt.outcome)} instead of a receipt: ${submitted.stdout}` };
+		if ((receipt as Record<string, unknown>)['outcome'] !== "operation_receipt") {
+			return { ok: false, message: `the refused submission answered ${String((receipt as Record<string, unknown>)['outcome'])} instead of a receipt: ${submitted.stdout}` };
 		}
-		const operationIdentifier = receipt.operation_identifier;
+		const operationIdentifier = (receipt as Record<string, unknown>)['operation_identifier'];
 		if (typeof operationIdentifier !== "string" || operationIdentifier.length === 0) {
 			return { ok: false, message: `the refused submission named no operation: ${submitted.stdout}` };
 		}
@@ -92,14 +92,14 @@ export const scenario = {
 		if (!ended.ok) {
 			return ended;
 		}
-		if (ended.envelope.outcome !== "operation_recovery_required") {
-			return { ok: false, message: `the refused submission ended as ${String(ended.envelope.outcome)} instead of the unresolved recovery state: ${JSON.stringify(ended.envelope)}` };
+		if ((ended.envelope as Record<string, unknown>)['outcome'] !== "operation_recovery_required") {
+			return { ok: false, message: `the refused submission ended as ${String((ended.envelope as Record<string, unknown>)['outcome'])} instead of the unresolved recovery state: ${JSON.stringify(ended.envelope)}` };
 		}
-		const category = typeof ended.envelope.category === "string" ? String(ended.envelope.category) : undefined;
+		const category = typeof (ended.envelope as Record<string, unknown>)['category'] === "string" ? String((ended.envelope as Record<string, unknown>)['category']) : undefined;
 		if (category !== "ambiguous_submission") {
 			return { ok: false, message: `the unresolved recovery named ${JSON.stringify(category)} instead of the ambiguous submission it is: ${JSON.stringify(ended.envelope)}` };
 		}
-		const evidence = typeof ended.envelope.evidence === "string" ? String(ended.envelope.evidence) : "";
+		const evidence = typeof (ended.envelope as Record<string, unknown>)['evidence'] === "string" ? String((ended.envelope as Record<string, unknown>)['evidence']) : "";
 		if (!evidence.includes("SubmissionUnknown")) {
 			return { ok: false, message: `the unresolved recovery's evidence does not name the submission as unknown: ${JSON.stringify(ended.envelope)}` };
 		}

@@ -71,6 +71,17 @@ chunk_bytes = 65536
 [planted_result]
 
 # Reason: the size a scenario plants comfortably above the protocol's inline
-# result bound, so the oversized-result path answers with an artifact
-# reference every time and never flirts with the inline path.
-bytes = 10485760
+# result bound (`maximum_agent_inline_loaded_document_bytes`, 262144), so the
+# oversized-result path answers with an artifact reference every time and never
+# flirts with the inline path. Twice the inline bound rather than an order of
+# magnitude past it: the plant travels as one request the platform's own POST
+# servlet accepts, and a body near the servlet's own limit would be a second
+# thing the scenario proves instead of the artifact path.
+bytes = 524288
+
+# Reason: the size of each planted property. The command contract bounds one
+# string property at `maximum_property_string_bytes` (65536), so a single
+# larger string is a document the client's own loaded-document reader refuses
+# no matter how correct its framing is. The bulk therefore travels as many
+# properties of this size, which is the shape the contract admits.
+property_bytes = 65536

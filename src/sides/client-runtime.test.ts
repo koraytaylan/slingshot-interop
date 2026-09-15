@@ -9,7 +9,6 @@ import {
 	proveClientSequence,
 	type StartClientRunnerOptions,
 	type VerifiedArchiveOutcome,
-	type StartClientRunnerOutcome,
 } from "./client-runtime.ts";
 import { writeFile, rm, mkdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -28,8 +27,6 @@ describe("Client Runtime", () => {
 	describe("verifyReleaseArchive", () => {
 		const archivePath = join(tmpdir(), "test-archive.tar.gz");
 		const executableContent = "binary-bytes";
-		const checksumsContent = `5891b806d2226981433328e35023d377d6d5e4003497254f8818430101010101  slingshot\n`;
-		// The above is a fake hash for the example, I'll calculate real ones.
 
 		async function createTestArchive(files: Record<string, string>) {
 			const dir = join(tmpdir(), `archive-work-${Date.now()}`);

@@ -16,20 +16,14 @@ import {
 	readSideDocument,
 	resolveSide,
 	type SideName,
-	type ResolvedSide,
-	type SideResolution,
 } from "../sides/pinning.ts";
 import {
 	startSlingRuntime,
-	type SlingRuntimeHandle,
 } from "../sides/agent-runtime.ts";
 import {
 	verifyReleaseArchive,
 	extractExecutable,
 	startClientRunner,
-	type ClientRunnerHandle,
-	type VerifiedArchiveOutcome,
-	type StartClientRunnerOptions,
 } from "../sides/client-runtime.ts";
 import {
 AUTHOR_RUNTIME_NAME,
@@ -45,6 +39,7 @@ import {
 	type ContainerHandle,
 } from "../harness/container.ts";
 import { runPodman } from "../harness/podman.ts";
+import { severancePoints } from "../harness/severance-proxy.ts";
 import { readdir } from "node:fs/promises";
 
 // The proxy's control listener sits one port above its forwarding listener:
@@ -53,6 +48,24 @@ import { readdir } from "node:fs/promises";
 // caller picks its own.
 export function severanceControlPort(values: Values): number {
 	return values.ports.proxy + 1;
+}
+
+// Disarms every severance point the proxy can hold, so the relay a scenario
+// shared is handed back the way it was lent: a point left armed would sever
+// the exchanges of every scenario that ran after the one that armed it.
+async function disarmSeveranceProxy(values: Values): Promise<{ readonly ok: true } | { readonly ok: false; readonly message: string }> {
+	for (const point of severancePoints) {
+		let response: Response;
+		try {
+			response = await fetch(`http://127.0.0.1:${severanceControlPort(values)}/disarm/${point}`, { method: "POST", signal: AbortSignal.timeout(10_000) });
+		} catch (failure) {
+			return { ok: false, message: `the control listener did not answer: ${failure instanceof Error ? failure.message : String(failure)}` };
+		}
+		if (!response.ok) {
+			return { ok: false, message: `disarming ${point} answered ${response.status} ${await response.text()}` };
+		}
+	}
+	return { ok: true };
 }
 
 
@@ -78,7 +91,17 @@ export type OrchestrationOutcome =
 export async function runInterop(
 	baseDirectory: string,
 	options: {
-		readonly images: Record<string, { readonly identifier: string }>;
+		// The three prepared images the run assembles itself from, each named
+		// by the identifier its verification reads. Declared as a closed set
+		// rather than an open record: a run that reached for an image it was
+		// never given would be a run assembling something the preparation
+		// command never verified, and an index signature would let a missing
+		// image read as `undefined` at the moment it is used.
+		readonly images: {
+			readonly "tier-sling": { readonly identifier: string };
+			readonly "client-runner": { readonly identifier: string };
+			readonly "severance-proxy": { readonly identifier: string };
+		};
 		readonly executable?: string;
 	},
 ): Promise<OrchestrationOutcome> {
@@ -93,12 +116,12 @@ export async function runInterop(
 	const slingshotRes = resolveSide("slingshot", slingshotDoc, baseDirectory);
 	const agentRes = resolveSide("agent", agentDoc, baseDirectory);
 
-	if (slingshotRes.refused || agentRes.refused) {
+	if ('refused' in slingshotRes || 'refused' in agentRes) {
 		const refusals: { side: SideName; ownerStep: string }[] = [];
-		if (slingshotRes.refused) {
+		if ('refused' in slingshotRes) {
 			refusals.push({ side: "slingshot", ownerStep: slingshotRes.refused.ownerStep });
 		}
-		if (agentRes.refused) {
+		if ('refused' in agentRes) {
 			refusals.push({ side: "agent", ownerStep: agentRes.refused.ownerStep });
 		}
 		return {
@@ -113,10 +136,10 @@ export async function runInterop(
 
 	// 2. Verify prepared images
 	for (const [name, { identifier }] of Object.entries(options.images)) {
-		const check = await runPodman(["image", "inspect", identifier], {
-			captureLimitBytes: values.capture.maximumBytes,
-			executable: options.executable,
-		});
+	const check = await runPodman(["image", "inspect", identifier], {
+		captureLimitBytes: values.capture.maximumBytes,
+		...(options.executable !== undefined ? { executable: options.executable } : {}),
+	});
 		if (!check.ok) {
 			return {
 				ok: false,
@@ -132,7 +155,7 @@ export async function runInterop(
 		labelKey: values.label.key,
 		labelValue,
 		captureLimitBytes: values.capture.maximumBytes,
-		executable: options.executable,
+		...(options.executable !== undefined ? { executable: options.executable } : {}),
 	});
 
 	if (!network.ok) {
@@ -161,13 +184,13 @@ export async function runInterop(
 			consoleUsername: "admin",
 			consolePassword: "admin",
 			captureDirectory: workDirectory,
-			executable: options.executable,
+			...(options.executable !== undefined ? { executable: options.executable } : {}),
 		});
 
 		if (!authorRuntime.ok) {
 			throw new Error(`Author runtime failed to start: ${authorRuntime.message}`);
 		}
-		handles.push(authorRuntime.handle);
+		handles.push(authorRuntime.handle!);
 
 		// 4b. Start the severance proxy: the forwarding listener points at
 		// the author runtime, and its control listener is how a scenario
@@ -204,7 +227,7 @@ export async function runInterop(
 			stopGraceSeconds: values.stop.graceSeconds,
 			captureLimitBytes: values.capture.maximumBytes,
 			captureDirectory: workDirectory,
-			executable: options.executable,
+			...(options.executable !== undefined ? { executable: options.executable } : {}),
 		});
 		if (!severanceProxy.ok) {
 			throw new Error(`Severance proxy failed to start: ${severanceProxy.message}`);
@@ -246,13 +269,13 @@ export async function runInterop(
 			runtimeRoot: join(workDirectory, "runtime"),
 			captureDirectory: workDirectory,
 			deadline: new Date(Date.now() + values.readiness.harnessSeconds * 1000),
-			executable: options.executable,
+			...(options.executable !== undefined ? { executable: options.executable } : {}),
 		});
 
 		if (!clientRunner.ok) {
 			throw new Error(`Client runner failed to start: ${clientRunner.message}`);
 		}
-		handles.push(clientRunner.handle);
+		handles.push(clientRunner.handle!);
 
 		// 6. Discover and run scenarios
 		const scenariosDir = join(baseDirectory, "src/scenarios");
@@ -280,19 +303,29 @@ export async function runInterop(
 					runtimeRoot: join(workDirectory, "runtime"),
 					captureDirectory: workDirectory,
 					deadline: new Date(Date.now() + values.readiness.harnessSeconds * 1000),
-					executable: options.executable,
+					...(options.executable !== undefined ? { executable: options.executable } : {}),
 				},
 			);
 
 			scenarioOutcomes.push({ file, ok: outcome.ok, message: outcome.message });
+
+			// The proxy's armed set is state rather than a one-shot act, and
+			// every scenario's profile points at this proxy, so a point a
+			// scenario armed would sever the exchanges of every scenario after
+			// it. The orchestration restores the unarmed relay between
+			// scenarios, where the shared state it lent out is handed back.
+			const disarmed = await disarmSeveranceProxy(values);
+			if (!disarmed.ok) {
+				throw new Error(`Severance proxy could not be disarmed after ${file}: ${disarmed.message}`);
+			}
 		}
 
 		const reportLines = [
 			`Run label: ${labelValue}`,
 			`Author runtime image: ${options.images["tier-sling"].identifier}`,
 			`Client runner image: ${options.images["client-runner"].identifier}`,
-			`Slingshot side: ${slingshot.name} v${slingshot.version} (${slingshot.path}) digest:${slingshot.digest}`,
-			`Agent side: ${agent.name} v${agent.version} (${agent.path}) digest:${agent.digest}`,
+			`Slingshot side: ${slingshot.name} v${slingshot.source === "released" ? slingshot.version : "candidate"} (${slingshot.path}) digest:${slingshot.digest}`,
+			`Agent side: ${agent.name} v${agent.source === "released" ? agent.version : "candidate"} (${agent.path}) digest:${agent.digest}`,
 			`Scenarios:`,
 			...scenarioOutcomes.map((s) => `  - ${s.file}: ${s.ok ? "ok" : `failed (${s.message})`}`),
 		];
@@ -317,7 +350,7 @@ export async function runInterop(
 	await removeNetwork(network.name, {
 		captureLimitBytes: values.capture.maximumBytes,
 		captureDirectory: workDirectory,
-		executable: options.executable,
+		...(options.executable !== undefined ? { executable: options.executable } : {}),
 	});
 	await rm(workDirectory, { recursive: true, force: true });
 
@@ -327,7 +360,7 @@ export async function runInterop(
 		labelValue,
 		captureLimitBytes: values.capture.maximumBytes,
 		captureDirectory: tmpdir(),
-		executable: options.executable,
+		...(options.executable !== undefined ? { executable: options.executable } : {}),
 	});
 
 	if (!leakCheck.ok) {

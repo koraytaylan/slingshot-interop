@@ -2,7 +2,7 @@
 // Copyright 2026 Koray Taylan Davgana
 
 import { writeReport, type ReportData } from "./report.ts";
-import { ResolvedSide } from "../sides/pinning.ts";
+import { type ResolvedSide } from "../sides/pinning.ts";
 import { describe, test, expect, mock, spyOn, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
 

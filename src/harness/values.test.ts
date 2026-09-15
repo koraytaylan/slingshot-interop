@@ -24,7 +24,8 @@ describe("readValues", () => {
 		expect(values.ports.client).toBe(8081);
 		expect(values.ports.proxy).toBe(8082);
 		expect(values.severance.chunkBytes).toBe(65536);
-		expect(values.plantedResult.bytes).toBe(10485760);
+		expect(values.plantedResult.bytes).toBe(524288);
+		expect(values.plantedResult.propertyBytes).toBe(65536);
 	});
 });
 
@@ -75,6 +76,7 @@ proxy = 8082
 chunk_bytes = 65536
 [planted_result]
 bytes = 10485760
+property_bytes = 65536
 [extra]
 bytes = 1
 `,
@@ -104,6 +106,7 @@ grace_seconds = 10
 chunk_bytes = 65536
 [planted_result]
 bytes = 10485760
+property_bytes = 65536
 `,
 		);
 		expect(() => loadValues(extraInner)).toThrow(/unknown key: capture.surprise/);
@@ -129,6 +132,7 @@ grace_seconds = 10
 chunk_bytes = 65536
 [planted_result]
 bytes = 10485760
+property_bytes = 65536
 `,
 		);
 		expect(() => loadValues(missingInner)).toThrow(
@@ -157,6 +161,7 @@ proxy = 8082
 chunk_bytes = 65536
 [planted_result]
 bytes = 10485760
+property_bytes = 65536
 `,
 		);
 		expect(() => loadValues(wrong)).toThrow(/capture.maximum_bytes is not an integer/);

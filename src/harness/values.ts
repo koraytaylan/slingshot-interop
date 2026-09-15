@@ -33,6 +33,7 @@ export type Values = {
 	};
 	readonly plantedResult: {
 		readonly bytes: number;
+		readonly propertyBytes: number;
 	};
 };
 
@@ -47,7 +48,7 @@ const schema: Schema = {
 	label: ["key"],
 	ports: ["author", "client", "proxy"],
 	severance: ["chunkBytes"],
-	plantedResult: ["bytes"],
+	plantedResult: ["bytes", "propertyBytes"],
 };
 
 const tomlSection: Record<keyof Values, string> = {
@@ -71,7 +72,7 @@ const tomlKey: Record<keyof Values, Record<string, string>> = {
 	label: { key: "key" },
 	ports: { author: "author", client: "client", proxy: "proxy" },
 	severance: { chunkBytes: "chunk_bytes" },
-	plantedResult: { bytes: "bytes" },
+	plantedResult: { bytes: "bytes", propertyBytes: "property_bytes" },
 };
 
 function requireTable(document: unknown, name: string): Record<string, unknown> {
@@ -166,7 +167,10 @@ export function loadValues(document: unknown): Values {
 			proxy: requireInteger(ports, "proxy", "ports"),
 		},
 		severance: { chunkBytes: requireInteger(severance, "chunk_bytes", "severance") },
-		plantedResult: { bytes: requireInteger(plantedResult, "bytes", "plantedResult") },
+		plantedResult: {
+			bytes: requireInteger(plantedResult, "bytes", "plantedResult"),
+			propertyBytes: requireInteger(plantedResult, "property_bytes", "plantedResult"),
+		},
 	};
 }
 
