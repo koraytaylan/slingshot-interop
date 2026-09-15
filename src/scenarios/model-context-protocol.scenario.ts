@@ -18,7 +18,7 @@
 // file owns is thin: it writes those lines to the server's input and reads
 // what the server wrote back.
 
-import { invoke, machineArguments, runner } from "./support.ts";
+import { agentAuthorization, invoke, machineArguments, runner, waitTerminal } from "./support.ts";
 import type { StartClientRunnerOptions } from "../sides/client-runtime.ts";
 import type { ContainerHandle } from "../harness/container.ts";
 
@@ -261,15 +261,148 @@ export const scenario = {
 					message: `the ${calledToolName} call answered ${JSON.stringify(outcome)}, which is not one of the tags this tool declares: ${JSON.stringify(carried).slice(0, 800)}`,
 				};
 			}
+			// A registry command is the stronger claim, and it is asked for
+			// after the control: a command tool call has to run the same
+			// command, on the same daemon, against the same agent a command
+			// line reaches, and leave the effect that command declares. The
+			// control above proves the route; this proves the route carries
+			// real work.
+			const commanded = await commandCall(handle, options, machine);
+			if (!commanded.ok) {
+				return commanded;
+			}
+
 			return {
 				ok: true,
-				message: `the protocol server answered a ${catalog.length}-tool catalog, every tool with an input schema, and a real ${calledToolName} call carrying its own ${JSON.stringify(outcome)} document`,
+				message: `the protocol server answered a ${catalog.length}-tool catalog, every tool with an input schema, a real ${calledToolName} call carrying its own ${JSON.stringify(outcome)} document, and a real ${commandedToolName} call whose command ran on the agent and left ${commanded.effect}`,
 			};
 		} catch (error) {
 			return { ok: false, message: error instanceof Error ? error.message : String(error) };
 		}
 	},
 };
+
+// The registry command this scenario calls through the protocol. A write,
+// because a write is what proves the call reached the agent rather than only
+// the daemon: the effect is asked for on the agent's own route afterwards, and
+// a call that never arrived could not have left one. It is made against a
+// parent this scenario plants first, so nothing depends on another scenario
+// having run.
+export const commandedToolName = "create_asset_folder";
+
+// Runs the registry-command tool call and proves its command reached the agent.
+//
+// The three things a consumer needs and a re-implementation would not: the
+// call is answered with a receipt rather than a JSON-RPC error, the operation
+// it names reaches a terminal disposition through the client's own leaf, and
+// the folder the call declared exists on the agent with the title it declared.
+async function commandCall(
+	handle: ContainerHandle,
+	options: StartClientRunnerOptions,
+	machine: readonly string[],
+): Promise<{ readonly ok: true; readonly effect: string } | { readonly ok: false; readonly message: string }> {
+	const parent = `/content/interop/${options.labelValue}/protocol`;
+	const folderName = "from-protocol";
+	const title = `Made over the protocol by ${options.labelValue}`;
+	const planted = await fetch(`http://127.0.0.1:${options.values.ports.author}${parent}`, {
+		method: "POST",
+		headers: { authorization: agentAuthorization("admin", "admin") },
+		body: new URLSearchParams({ "sling:resourceType": "nt:unstructured" }),
+		signal: AbortSignal.timeout(30_000),
+	});
+	if (!planted.ok) {
+		return { ok: false, message: `the call's parent could not be planted: ${planted.status} ${await planted.text()}` };
+	}
+	// The catalog is read again in the same exchange, so the call is only made
+	// for a tool this server advertises: a call for one it does not would be
+	// answered with `-32602` and the assertion below would pass for the wrong
+	// reason.
+	const requests: readonly ProtocolRequest[] = [
+		{ identifier: "catalog", method: "tools/list", parameters: {} },
+		{
+			identifier: "command",
+			method: "tools/call",
+			parameters: {
+				name: commandedToolName,
+				arguments: { operation_key: `${options.labelValue}-protocol`, path: parent, name: folderName, title },
+			},
+		},
+	];
+	const answered = await invoke(
+		handle,
+		[
+			runner(),
+			"--runtime-root",
+			options.runtimeRoot,
+			"--profile",
+			options.scratchHome.profileName,
+			"--environment",
+			options.scratchHome.environmentName,
+			"protocol-serve",
+		],
+		options,
+		new TextEncoder().encode(requestLines(requests)),
+	);
+	if (!answered.ok) {
+		return { ok: false, message: `the ${commandedToolName} protocol-serve could not run: ${answered.message}` };
+	}
+	if (answered.exitCode !== 0) {
+		return { ok: false, message: `the ${commandedToolName} protocol-serve exited ${answered.exitCode}: ${answered.stderr}` };
+	}
+	let documents: readonly AnsweredDocument[];
+	try {
+		documents = answeredDocuments(answered.stdout);
+	} catch (error) {
+		return { ok: false, message: error instanceof Error ? error.message : String(error) };
+	}
+	const catalog = catalogOf(resultOf(answerFor(documents, "catalog")));
+	if (!catalog.some((tool) => tool.name === commandedToolName)) {
+		return { ok: false, message: `the catalog of ${catalog.length} tools does not offer ${JSON.stringify(commandedToolName)}` };
+	}
+	let call: Record<string, unknown>;
+	try {
+		call = resultOf(answerFor(documents, "command"));
+	} catch (error) {
+		return { ok: false, message: `the ${commandedToolName} call was refused: ${error instanceof Error ? error.message : String(error)}` };
+	}
+	const content = call["content"];
+	const carried = Array.isArray(content) ? contentOf(content) : undefined;
+	if (carried === undefined) {
+		return { ok: false, message: `the ${commandedToolName} call answered no structured result: ${JSON.stringify(call).slice(0, 800)}` };
+	}
+	if (carried["outcome"] !== "operation_receipt") {
+		return { ok: false, message: `the ${commandedToolName} call answered ${JSON.stringify(carried["outcome"])} instead of a receipt: ${JSON.stringify(carried).slice(0, 800)}` };
+	}
+	const operationIdentifier = carried["operation_identifier"];
+	if (typeof operationIdentifier !== "string" || operationIdentifier.length === 0) {
+		return { ok: false, message: `the ${commandedToolName} call named no operation: ${JSON.stringify(carried).slice(0, 800)}` };
+	}
+	// The command has to run: the operation the call named reaches a terminal
+	// disposition through the client's own leaf, which is the same wait a
+	// command line does.
+	const ended = await waitTerminal(handle, machine, operationIdentifier, options, options.values.readiness.harnessSeconds * 1000);
+	if (!ended.ok) {
+		return { ok: false, message: `the ${commandedToolName} operation the call produced: ${ended.message}` };
+	}
+	if (ended.envelope.outcome === "operation_terminal_error" || ended.envelope.outcome === "operation_recovery_required") {
+		return { ok: false, message: `the ${commandedToolName} call the protocol server made ended as ${JSON.stringify(ended.envelope)}` };
+	}
+	// And it reached the agent: the folder the call declared answers on the
+	// agent's own route with the title the call declared. A call that never
+	// left the daemon could not have made one.
+	const made = await fetch(`http://127.0.0.1:${options.values.ports.author}${parent}/${folderName}.json`, {
+		headers: { authorization: agentAuthorization("admin", "admin") },
+		signal: AbortSignal.timeout(10_000),
+	});
+	if (!made.ok) {
+		return { ok: false, message: `the folder the ${commandedToolName} call declared does not answer on the agent: ${made.status} ${await made.text()}` };
+	}
+	const document = (await made.json()) as Record<string, unknown>;
+	if (document["jcr:title"] !== title) {
+		return { ok: false, message: `the folder the ${commandedToolName} call declared carries the title ${JSON.stringify(document["jcr:title"])} where the call declared ${JSON.stringify(title)}: ${JSON.stringify(document).slice(0, 400)}` };
+	}
+	return { ok: true, effect: `${parent}/${folderName}` };
+}
 
 // The tags `operation-list` may answer with, which
 // `crates/slingshot-command-line/src/model_context_protocol/schema_projection.rs`
