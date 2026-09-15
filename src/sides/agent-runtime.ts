@@ -17,6 +17,7 @@ import {
 	type ContainerRefusal,
 } from "../harness/container.ts";
 import type { Values } from "../harness/values.ts";
+import { phases, type PhaseReporter } from "../run/progress.ts";
 import { AUTHOR_RUNTIME_NAME } from "./client-configuration.ts";
 
 // The image the preparation command built and recorded, verified offline by
@@ -42,6 +43,14 @@ export type StartSlingRuntimeOptions = {
 	readonly consoleBase?: string;
 	readonly captureDirectory?: string;
 	readonly executable?: string;
+	// Where each step of bringing the author up is reported.
+	//
+	// This is the run's longest single step and it is not one wait but seven:
+	// the container, four console writes, the bundle install, and three
+	// readiness routes that settle in a fixed order. Naming which one is
+	// pending is the difference between a reader who can see the author
+	// starting and a reader watching a number climb.
+	readonly progress?: (line: string) => void;
 };
 
 export type SlingRuntimeHandle = {
@@ -474,6 +483,26 @@ export async function startSlingRuntime(
 	options: StartSlingRuntimeOptions,
 ): Promise<StartSlingRuntimeOutcome> {
 	const port = options.values.ports.author;
+	// One reporter for the whole sequence, so the heartbeat always repeats
+	// whichever step is current rather than the first one. Every exit from this
+	// function is inside the `finally`, because a heartbeat left running after a
+	// failed start is worse than a silent one: it keeps the process alive and
+	// keeps printing about a container somebody is tearing down.
+	const phase = phases(options.progress ?? (() => {}));
+	try {
+		return await startSlingRuntimePhases(options, port, phase);
+	} finally {
+		phase.done();
+	}
+}
+
+// The sequence `startSlingRuntime` runs, with the reporter already begun.
+async function startSlingRuntimePhases(
+	options: StartSlingRuntimeOptions,
+	port: number,
+	phase: PhaseReporter,
+): Promise<StartSlingRuntimeOutcome> {
+	phase.begin("waiting for the author container's console route");
 	// Exactly one port for the harness: the author's, mapped as-is.
 	const started = await startContainer({
 		image: options.image,
@@ -497,18 +526,21 @@ export async function startSlingRuntime(
 		return started as ContainerRefusal;
 	}
 	const handle: ContainerHandle = started;
+	phase.begin("writing the author's state configuration");
 	const configured = await installStateConfiguration(port, options);
 	if (!configured.ok) {
 		await handle.stop(options.values.stop.graceSeconds);
 		await handle.remove();
 		return configured;
 	}
+	phase.begin("writing the forgery-token route");
 	const tokenised = await installForgeryToken(port, options);
 	if (!tokenised.ok) {
 		await handle.stop(options.values.stop.graceSeconds);
 		await handle.remove();
 		return tokenised;
 	}
+	phase.begin("installing the administrators group and the caller's membership");
 	const permitted = await installPermittedGroup(
 		options.consoleBase ?? `http://127.0.0.1:${port}`,
 		{
@@ -523,6 +555,7 @@ export async function startSlingRuntime(
 		await handle.remove();
 		return permitted;
 	}
+	phase.begin("planting the run's content root");
 	const contentRoot = await installScenarioContentRoot(
 		options.consoleBase ?? `http://127.0.0.1:${port}`,
 		options.labelValue,
@@ -538,6 +571,7 @@ export async function startSlingRuntime(
 		await handle.remove();
 		return contentRoot;
 	}
+	phase.begin("installing the bundle and waiting for it to become active");
 	const installed = await installBundle(port, options);
 	if (!installed.ok) {
 		await handle.stop(options.values.stop.graceSeconds);
@@ -567,6 +601,7 @@ export async function startSlingRuntime(
 		// remains capturable for the run report.
 		return active;
 	}
+	phase.begin("the bundle's state route to answer");
 	// Active is the bundle's state, not its servlets'. The state route is the
 	// first thing every scenario and every reconciliation lookup reads, and a
 	// lookup nobody can read yet answers 500 rather than the nothing-there
@@ -576,6 +611,7 @@ export async function startSlingRuntime(
 	if (!stateReady.ok) {
 		return stateReady;
 	}
+	phase.begin("the continuation-key authority to become ready");
 	// The continuation-key authority is the last thing to become ready, and
 	// the client refuses an agent that advertises it as not ready — its own
 	// rule being that an agent whose tokens would not validate cannot be asked

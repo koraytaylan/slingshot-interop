@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execInContainer, parseMachineEnvelope, runnerExecutablePath, type ExecResult, type MachineEnvelope, type StartClientRunnerOptions } from "../sides/client-runtime.ts";
 import type { ContainerHandle } from "../harness/container.ts";
+import { WAIT_NOTICE_SECONDS } from "../run/progress.ts";
 
 // The global shape every catalog invocation carries, machine-rendered,
 // against the run's runtime root and the scratch home's pair: the machine
@@ -79,7 +80,11 @@ export type WaitOutcome =
 export async function waitTerminal(handle: ContainerHandle, machine: readonly string[], operationIdentifier: string, options: StartClientRunnerOptions, deadlineMs: number): Promise<WaitOutcome> {
 	const poll = options.values.readiness.pollIntervalSeconds * 1000;
 	const deadline = Date.now() + deadlineMs;
+	const report = options.progress ?? (() => {});
+	const startedAt = Date.now();
+	let noticed = 0;
 	let lastAnswer: string | undefined;
+	report(`waiting for ${operationIdentifier} to reach a terminal answer (up to ${Math.round(deadlineMs / 1000)}s)`);
 	while (Date.now() < deadline) {
 		const waited = await invoke(handle, [runner(), ...machine, "operation-wait", "--operation", operationIdentifier], options);
 		if (!waited.ok) {
@@ -87,9 +92,24 @@ export async function waitTerminal(handle: ContainerHandle, machine: readonly st
 		}
 		const terminal = await terminalAnswer(handle, machine, waited, operationIdentifier, options);
 		if (terminal !== undefined) {
+			// Nothing is said here on success. The scenario that asked for this
+			// wait reports how it went, and a second voice on the same event is
+			// a line a reader has to reconcile rather than read.
 			return terminal;
 		}
 		lastAnswer = waited.stdout;
+		// Still waiting is the one thing a reader cannot tell from a hang, so it
+		// is said at the same cadence the run says it everywhere else. The state
+		// the daemon reported travels with it, because "still waiting" and
+		// "still waiting, and it is running" are different things to a person
+		// watching.
+		const waitedSeconds = Math.round((Date.now() - startedAt) / 1000);
+		if (waitedSeconds >= (noticed + 1) * WAIT_NOTICE_SECONDS) {
+			noticed += 1;
+			const parsed = envelope(waited.stdout, "operation-wait");
+			const state = parsed.ok === false ? "an answer that could not be read" : `state ${String(parsed.state ?? "unknown")}`;
+			report(`still waiting for ${operationIdentifier} after ${waitedSeconds}s (${state})`);
+		}
 		await Bun.sleep(Math.min(poll, Math.max(1, deadline - Date.now())));
 	}
 	return { ok: false, message: `operation-wait on ${operationIdentifier} did not reach a terminal answer by the scenario's deadline; its last answer was ${JSON.stringify((lastAnswer ?? "").slice(0, 800))}` };

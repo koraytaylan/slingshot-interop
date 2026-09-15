@@ -49,6 +49,12 @@ export type StartClientRunnerOptions = {
 	// The absolute instant by which the runner must be up.
 	readonly deadline: Date;
 	readonly executable?: string;
+	// Where a scenario says what it is waiting for while it waits. A scenario
+	// blocks on an operation reaching its terminal disposition, which is the
+	// one place inside a scenario a reader can sit without knowing whether
+	// anything is happening. Starting the runner itself does not report here:
+	// that is the orchestration's step, and it reports its own.
+	readonly progress?: (line: string) => void;
 };
 
 export type ClientRunnerHandle = {

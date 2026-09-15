@@ -24,6 +24,12 @@ const imageIdentifiers: Record<string, { readonly identifier: string }> = {
 
 const outcome = await runInterop(baseDirectory, {
 	images: imageIdentifiers,
+	// Progress goes to standard error, one line per step, while the run is
+	// running. A run takes minutes and says nothing on standard output until
+	// it has finished, so a reader watching a terminal needs the steps as they
+	// happen; keeping them off standard output leaves the report the only
+	// thing on it, which is what something parsing this command reads.
+	progress: (line) => console.error(line),
 });
 
 if (!outcome.ok) {

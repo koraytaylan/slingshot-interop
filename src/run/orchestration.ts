@@ -41,6 +41,12 @@ import {
 import { runPodman } from "../harness/podman.ts";
 import { severancePoints } from "../harness/severance-proxy.ts";
 import { readdir } from "node:fs/promises";
+import {
+	elapsedSeconds,
+	silentProgress,
+	whileWaiting,
+	type ProgressSink,
+} from "./progress.ts";
 
 // The proxy's control listener sits one port above its forwarding listener:
 // the forwarding port is the one profiles point at, the control port is the
@@ -103,11 +109,17 @@ export async function runInterop(
 			readonly "severance-proxy": { readonly identifier: string };
 		};
 		readonly executable?: string;
+		// Where the run says what it is doing while it does it. A caller that
+		// supplies nothing gets silence, so a run under test prints nothing of
+		// its own and a run in a terminal says each step as it happens.
+		readonly progress?: ProgressSink;
 	},
 ): Promise<OrchestrationOutcome> {
 	const values = readValues(join(baseDirectory, "support/harness-values.toml"));
 	const labelValue = `run-${Date.now()}`;
 	const networkName = `net-${labelValue}`;
+	const report = options.progress ?? silentProgress;
+	report(`run ${labelValue}: resolving both sides`);
 
 	// 1. Resolve both sides
 	const slingshotDoc = readSideDocument(join(baseDirectory, "support/slingshot-side.toml"));
@@ -133,8 +145,13 @@ export async function runInterop(
 
 	const slingshot = slingshotRes.resolved;
 	const agent = agentRes.resolved;
+	report(
+		`slingshot ${slingshot.source === "released" ? `v${slingshot.version}` : "candidate"} from ${slingshot.path}`,
+	);
+	report(`agent ${agent.source === "released" ? `v${agent.version}` : "candidate"} from ${agent.path}`);
 
 	// 2. Verify prepared images
+	report(`checking ${Object.keys(options.images).length} prepared images`);
 	for (const [name, { identifier }] of Object.entries(options.images)) {
 	const check = await runPodman(["image", "inspect", identifier], {
 		captureLimitBytes: values.capture.maximumBytes,
@@ -150,6 +167,7 @@ export async function runInterop(
 	}
 
 	// 3. Setup resources
+	report("creating the run's network");
 	const workDirectory = await mkdtemp(join(tmpdir(), "interop-work-"));
 	const network = await createNetwork(networkName, {
 		labelKey: values.label.key,
@@ -173,6 +191,8 @@ export async function runInterop(
 
 	try {
 		// 4. Start author runtime
+		report(`starting the author runtime (${options.images["tier-sling"].identifier})`);
+		const authorStartedAt = Date.now();
 		const authorRuntime = await startSlingRuntime({
 			image: options.images["tier-sling"].identifier,
 			values,
@@ -184,6 +204,11 @@ export async function runInterop(
 			consoleUsername: "admin",
 			consolePassword: "admin",
 			captureDirectory: workDirectory,
+			// The author runtime is not one wait but a sequence of them, and it
+			// is the run's longest step: it reports each phase itself, so a
+			// reader sees which part of bringing the author up is pending
+			// rather than one line repeating while a number climbs.
+			progress: report,
 			...(options.executable !== undefined ? { executable: options.executable } : {}),
 		});
 
@@ -191,12 +216,18 @@ export async function runInterop(
 			throw new Error(`Author runtime failed to start: ${authorRuntime.message}`);
 		}
 		handles.push(authorRuntime.handle!);
+		report(`author runtime ready after ${elapsedSeconds(authorStartedAt)}s`);
 
 		// 4b. Start the severance proxy: the forwarding listener points at
 		// the author runtime, and its control listener is how a scenario
 		// arms a severance point. Its readiness is its own entrypoint having
 		// printed its listening line.
-		const severanceProxy = await startContainer({
+		report("starting the severance proxy");
+		const severanceProxy = await whileWaiting(
+			"the severance proxy to print its listening line",
+			report,
+			() =>
+				startContainer({
 			image: options.images["severance-proxy"].identifier,
 			labelKey: values.label.key,
 			labelValue,
@@ -228,13 +259,16 @@ export async function runInterop(
 			captureLimitBytes: values.capture.maximumBytes,
 			captureDirectory: workDirectory,
 			...(options.executable !== undefined ? { executable: options.executable } : {}),
-		});
+				}),
+		);
 		if (!severanceProxy.ok) {
 			throw new Error(`Severance proxy failed to start: ${severanceProxy.message}`);
 		}
 		handles.push(severanceProxy);
+		report("severance proxy ready");
 
 		// 5. Start client runner
+		report("verifying and extracting the client archive");
 		const archiveVerified = await verifyReleaseArchive(
 			slingshot.path,
 			slingshot.digest,
@@ -259,23 +293,30 @@ export async function runInterop(
 			parent: workDirectory,
 		});
 
-		const clientRunner = await startClientRunner({
-			image: options.images["client-runner"].identifier,
-			values,
-			network: network.name,
-			labelValue,
-			executablePath: extracted.path,
-			scratchHome,
-			runtimeRoot: join(workDirectory, "runtime"),
-			captureDirectory: workDirectory,
-			deadline: new Date(Date.now() + values.readiness.harnessSeconds * 1000),
-			...(options.executable !== undefined ? { executable: options.executable } : {}),
-		});
+		report("starting the client runner");
+		const clientRunner = await whileWaiting(
+			"the client runner to come up",
+			report,
+			() =>
+				startClientRunner({
+					image: options.images["client-runner"].identifier,
+					values,
+					network: network.name,
+					labelValue,
+					executablePath: extracted.path,
+					scratchHome,
+					runtimeRoot: join(workDirectory, "runtime"),
+					captureDirectory: workDirectory,
+					deadline: new Date(Date.now() + values.readiness.harnessSeconds * 1000),
+					...(options.executable !== undefined ? { executable: options.executable } : {}),
+				}),
+		);
 
 		if (!clientRunner.ok) {
 			throw new Error(`Client runner failed to start: ${clientRunner.message}`);
 		}
 		handles.push(clientRunner.handle!);
+		report("client runner ready");
 
 		// 6. Discover and run scenarios
 		const scenariosDir = join(baseDirectory, "src/scenarios");
@@ -283,13 +324,16 @@ export async function runInterop(
 		const scenarioFiles = files
 			.filter((f) => f !== "README.md" && f.endsWith(".scenario.ts"))
 			.sort();
+		report(`running ${scenarioFiles.length} scenarios, in this order: ${scenarioFiles.join(", ")}`);
 
-		for (const file of scenarioFiles) {
+		for (const [position, file] of scenarioFiles.entries()) {
 			const scenarioModule = await import(join(scenariosDir, file));
 			const scenario = scenarioModule.scenario;
 			if (!scenario) {
 				throw new Error(`Scenario ${file} does not export a 'scenario' object`);
 			}
+			report(`[${position + 1}/${scenarioFiles.length}] ${file}`);
+			const scenarioStartedAt = Date.now();
 
 			const outcome = await scenario.run(
 				clientRunner.handle,
@@ -303,11 +347,22 @@ export async function runInterop(
 					runtimeRoot: join(workDirectory, "runtime"),
 					captureDirectory: workDirectory,
 					deadline: new Date(Date.now() + values.readiness.harnessSeconds * 1000),
+					// The scenario's own long wait is an operation reaching its
+					// terminal disposition, so the run's sink travels with it:
+					// a step that blocks for a minute says so at the same
+					// cadence as every other step.
+					progress: report,
 					...(options.executable !== undefined ? { executable: options.executable } : {}),
 				},
 			);
 
 			scenarioOutcomes.push({ file, ok: outcome.ok, message: outcome.message });
+			report(
+				`[${position + 1}/${scenarioFiles.length}] ${file}: ${outcome.ok ? "ok" : "failed"} after ${elapsedSeconds(scenarioStartedAt)}s`,
+			);
+			if (!outcome.ok) {
+				report(`    ${outcome.message}`);
+			}
 
 			// The proxy's armed set is state rather than a one-shot act, and
 			// every scenario's profile points at this proxy, so a point a
@@ -340,10 +395,17 @@ export async function runInterop(
 			reason: "SETUP_FAILED",
 			message: error instanceof Error ? error.message : String(error),
 		};
+		report(`the run stopped: ${finalOutcome.message}`);
 	}
 
 	// 7. Teardown
-	for (const handle of handles) {
+	report(`stopping ${handles.length} containers and removing the run's network`);
+	const teardownStartedAt = Date.now();
+	for (const [position, handle] of handles.entries()) {
+		// Each container gets its own line: stopping waits out a grace period,
+		// so a numbered line is the difference between a teardown a reader can
+		// watch and a stall they cannot tell from a hang.
+		report(`[${position + 1}/${handles.length}] stopping ${handle.id.slice(0, 12)}`);
 		await handle.stop(values.stop.graceSeconds);
 		await handle.remove();
 	}
@@ -353,6 +415,7 @@ export async function runInterop(
 		...(options.executable !== undefined ? { executable: options.executable } : {}),
 	});
 	await rm(workDirectory, { recursive: true, force: true });
+	report(`teardown finished after ${elapsedSeconds(teardownStartedAt)}s`);
 
 	// 8. Leak check
 	const leakCheck = await checkForLeaks({
