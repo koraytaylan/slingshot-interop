@@ -12,6 +12,10 @@ import {
 	answeredDocuments,
 	calledToolName,
 	catalogOf,
+	controlsNeedingPriorWork,
+	isControlTool,
+	minimalArgumentsFor,
+	minimalValueFor,
 	protocolRevision,
 	requestLine,
 	requestLines,
@@ -141,5 +145,83 @@ describe("the tool catalog a consumer reads", () => {
 		// offers would be answered with an error, and the scenario's own
 		// assertion would then pass for the wrong reason.
 		expect(calledToolName).toBe("operation-list");
+	});
+});
+
+describe("the arguments a consumer builds from a tool's own schema", () => {
+	test("an enum gets its first declared spelling", () => {
+		expect(minimalValueFor("match_mode", { enum: ["any", "all"] })).toBe("any");
+	});
+
+	test("a constant gets itself, and a closed alternative its first branch", () => {
+		expect(minimalValueFor("mode", { const: "initial" })).toBe("initial");
+		expect(minimalValueFor("mode", { oneOf: [{ const: "second" }, { const: "third" }] })).toBe("second");
+	});
+
+	test("an array carries as many items as its declaration requires", () => {
+		expect(minimalValueFor("roots", { type: "array", minItems: 2, items: { type: "string" } })).toEqual([
+			"a-usable-value",
+			"a-usable-value",
+		]);
+	});
+
+	test("an object carries exactly the members it declares required", () => {
+		expect(
+			minimalValueFor("result_window", {
+				type: "object",
+				required: ["mode", "offset", "limit"],
+				properties: { mode: { const: "initial" }, offset: { type: "integer" }, limit: { type: "integer" } },
+			}),
+		).toEqual({ mode: "initial", offset: 1, limit: 1 });
+	});
+
+	test("a path member is given a spelling its pattern admits", () => {
+		expect(minimalValueFor("root_path", { type: "string", pattern: "^/" })).toBe("/content");
+		expect(minimalValueFor("property_path", { type: "string", pattern: "^[^/]" })).toBe("property");
+	});
+
+	test("the smallest legal call fills only the members the tool requires", () => {
+		const built = minimalArgumentsFor(
+			{
+				name: "create_page",
+				inputSchema: {
+					required: ["page_name", "parent_path", "template_path", "title", "operation_key"],
+					properties: {
+						page_name: { type: "string" },
+						parent_path: { type: "string", pattern: "^/" },
+						template_path: { type: "string", pattern: "^/" },
+						title: { type: "string" },
+						initial_properties: { type: "object" },
+					},
+				},
+			},
+			"a-caller-key",
+		);
+		// The optional property is absent, and the key is the caller's: a call
+		// filling what it was not asked to fill would make the sweep's result
+		// about the sweep rather than about the tool.
+		expect(built).toEqual({
+			page_name: "a-usable-value",
+			parent_path: "/content",
+			template_path: "/content",
+			title: "a-usable-value",
+			operation_key: "a-caller-key",
+		});
+	});
+
+	test("a control and a registry command are told apart by the provider's own spelling", () => {
+		expect(isControlTool({ name: "operation-list", inputSchema: {} })).toBe(true);
+		expect(isControlTool({ name: "create_page", inputSchema: {} })).toBe(false);
+	});
+
+	test("the controls that need prior work are named rather than silently skipped", () => {
+		// Each of these names something a run has to have made first, so a
+		// sweep cannot invent it; naming them is what keeps the sweep's claim
+		// honest about which part of the surface it covers.
+		expect([...controlsNeedingPriorWork]).toEqual([
+			"operation-restart",
+			"operation-artifact",
+			"maintenance-apply",
+		]);
 	});
 });
