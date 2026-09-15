@@ -24,9 +24,18 @@
 # The installed modules the compiler and the type definitions need.
 /node_modules/
 
-# The per-run work directory: bounded capture files, the scratch home, and the
-# run report, all written by one run and gone when the run is.
+# The per-run work directory: bounded capture files and the scratch home,
+# written by one run and gone when the run is. It lives under the system's
+# temporary directory rather than here, so this rule guards the path the
+# orchestration would use if it were ever moved into the tree.
 /.runs/
+
+# The run report, one file per run at the repository root. It is written to
+# survive the teardown that removes the work directory, so it is the one
+# output of a run that outlives it - and it is an output rather than source:
+# each run names its own label, so a tree that kept them would carry a
+# growing pile of files nobody authored.
+/run-*.toml
 
 # OS noise
 .DS_Store
