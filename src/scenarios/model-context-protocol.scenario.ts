@@ -154,6 +154,85 @@ export function catalogOf(result: Record<string, unknown>): readonly CataloguedT
 // being trusted, so a call is only made for a tool the server advertises.
 export const calledToolName = "operation-list";
 
+// The value one declared schema member is given, from the member's own
+// declaration rather than from its name: an enum gets its first spelling, an
+// array as many items as it requires, an object its own required members, and a
+// string the smallest spelling its pattern admits. A consumer that knows nothing
+// about this product can still build a legal call from what the tool declares.
+export function minimalValueFor(member: string, schema: Record<string, unknown>): unknown {
+	const spellings = schema["enum"];
+	if (Array.isArray(spellings) && spellings.length > 0) {
+		return spellings[0];
+	}
+	if (schema["const"] !== undefined) {
+		return schema["const"];
+	}
+	for (const key of ["oneOf", "anyOf"]) {
+		const alternatives = schema[key];
+		if (Array.isArray(alternatives) && alternatives.length > 0) {
+			return minimalValueFor(member, alternatives[0] as Record<string, unknown>);
+		}
+	}
+	switch (schema["type"]) {
+		case "boolean":
+			return false;
+		case "integer":
+		case "number":
+			return 1;
+		case "array": {
+			const least = Math.max(1, Number(schema["minItems"] ?? 0));
+			const item = (schema["items"] as Record<string, unknown>) ?? { type: "string" };
+			return Array.from({ length: least }, () => minimalValueFor(member, item));
+		}
+		case "object": {
+			const required = (schema["required"] as string[] | undefined) ?? [];
+			const properties = (schema["properties"] as Record<string, Record<string, unknown>> | undefined) ?? {};
+			const built: Record<string, unknown> = {};
+			for (const held of required) {
+				built[held] = minimalValueFor(held, properties[held] ?? { type: "string" });
+			}
+			return built;
+		}
+		default: {
+			if (String(schema["pattern"] ?? "").startsWith("^/")) {
+				return "/content";
+			}
+			switch (member) {
+				case "media_type":
+					return "text/plain";
+				case "encoded_content":
+				case "payload":
+					return "";
+				case "property_path":
+					return "property";
+				default:
+					return "a-usable-value";
+			}
+		}
+	}
+}
+
+// The arguments one call for `tool` would send, from the schema the tool
+// declares. Only the members it marks required are filled, so what this builds
+// is the smallest legal call — the one a consumer doing the least would send.
+export function minimalArgumentsFor(tool: CataloguedTool, key: string): Record<string, unknown> {
+	const required = (tool.inputSchema["required"] as string[] | undefined) ?? [];
+	const properties = (tool.inputSchema["properties"] as Record<string, Record<string, unknown>> | undefined) ?? {};
+	const built: Record<string, unknown> = {};
+	for (const member of required) {
+		built[member] = member === "operation_key" ? key : minimalValueFor(member, properties[member] ?? { type: "string" });
+	}
+	return built;
+}
+
+// Whether one tool is a control rather than a registry command. The two are
+// told apart by what the provider names them with: every control is hyphenated
+// and every registry command is underscored, which is the provider's own
+// spelling and not a rule invented here.
+export function isControlTool(tool: CataloguedTool): boolean {
+	return tool.name.includes("-");
+}
+
 export const scenario = {
 	async run(handle: ContainerHandle, options: StartClientRunnerOptions) {
 		// 0. The daemon: a tool call reaches the same operation machinery a
@@ -271,10 +350,19 @@ export const scenario = {
 			if (!commanded.ok) {
 				return commanded;
 			}
+			// Every advertised tool, not only the two called above. The catalog
+			// is a promise about all of its entries, and the failure this
+			// catches is the one where a tool is advertised and can never be
+			// reached: a call answered with a local failure rather than with
+			// anything the daemon was asked.
+			const swept = await sweepCatalog(handle, options, commanded.operationIdentifier);
+			if (!swept.ok) {
+				return { ok: false, message: swept.message };
+			}
 
 			return {
 				ok: true,
-				message: `the protocol server answered a ${catalog.length}-tool catalog, every tool with an input schema, a real ${calledToolName} call carrying its own ${JSON.stringify(outcome)} document, and a real ${commandedToolName} call whose command ran on the agent and left ${commanded.effect}`,
+				message: `the protocol server answered a ${catalog.length}-tool catalog, every tool with an input schema, ${swept.answered.length} read-only tools each answered through a call built from that tool's own declared schema (${swept.notDriven.length} needing prior work not driven here: ${swept.notDriven.join(", ")}), a real ${calledToolName} call carrying its own ${JSON.stringify(outcome)} document, and a real ${commandedToolName} call whose command ran on the agent and left ${commanded.effect}`,
 			};
 		} catch (error) {
 			return { ok: false, message: error instanceof Error ? error.message : String(error) };
@@ -300,7 +388,7 @@ async function commandCall(
 	handle: ContainerHandle,
 	options: StartClientRunnerOptions,
 	machine: readonly string[],
-): Promise<{ readonly ok: true; readonly effect: string } | { readonly ok: false; readonly message: string }> {
+): Promise<{ readonly ok: true; readonly effect: string; readonly operationIdentifier: string } | { readonly ok: false; readonly message: string }> {
 	const parent = `/content/interop/${options.labelValue}/protocol`;
 	const folderName = "from-protocol";
 	const title = `Made over the protocol by ${options.labelValue}`;
@@ -324,7 +412,7 @@ async function commandCall(
 			method: "tools/call",
 			parameters: {
 				name: commandedToolName,
-				arguments: { operation_key: `${options.labelValue}-protocol`, path: parent, name: folderName, title },
+				arguments: { operation_key: `${options.labelValue}-protocol`, parent_path: parent, name: folderName, title },
 			},
 		},
 	];
@@ -401,7 +489,7 @@ async function commandCall(
 	if (document["jcr:title"] !== title) {
 		return { ok: false, message: `the folder the ${commandedToolName} call declared carries the title ${JSON.stringify(document["jcr:title"])} where the call declared ${JSON.stringify(title)}: ${JSON.stringify(document).slice(0, 400)}` };
 	}
-	return { ok: true, effect: `${parent}/${folderName}` };
+	return { ok: true, effect: `${parent}/${folderName}`, operationIdentifier };
 }
 
 // The tags `operation-list` may answer with, which
@@ -433,4 +521,147 @@ export function contentOf(content: readonly unknown[]): Record<string, unknown> 
 		}
 	}
 	return undefined;
+}
+
+// What one sweep of the whole catalog found.
+export type SweepOutcome =
+	| { readonly ok: true; readonly answered: readonly string[]; readonly notDriven: readonly string[] }
+	| { readonly ok: false; readonly message: string };
+
+// The controls whose arguments name something a run has to have made first: an
+// operation waiting in a recovery, an artifact an operation produced, and a
+// maintenance preview whose digest has been reviewed. A sweep of the catalog
+// cannot invent those, and calling one anyway would make the sweep's result
+// about what the sweep happened to have rather than about the tool. They are
+// named rather than skipped silently, so what this sweep does not prove is as
+// visible as what it does.
+export const controlsNeedingPriorWork = [
+	"operation-restart",
+	"operation-artifact",
+	"maintenance-apply",
+] as const;
+
+// Every read-only tool the catalog advertises, called with the arguments its own
+// schema declares, against the run's live daemon.
+//
+// The specific defect this catches is a tool advertised in a catalog and
+// unreachable through it: a call answered from this process, with a local
+// failure, because the translation from a call's arguments to the thing that
+// runs them only ever worked for the handful somebody tried by hand. A tool that
+// reaches the daemon is answered by the daemon, even when what it is answered
+// with is a refusal about something that does not exist.
+//
+// The controls that need prior work are excluded by name and reported, so the
+// reader knows exactly which part of the surface this does not cover.
+export async function sweepCatalog(
+	handle: ContainerHandle,
+	options: StartClientRunnerOptions,
+	operationIdentifier: string,
+): Promise<SweepOutcome> {
+	const catalogRequest: ProtocolRequest = { identifier: "catalog", method: "tools/list", parameters: {} };
+	const catalogAnswered = await invoke(
+		handle,
+		[
+			runner(),
+			"--runtime-root",
+			options.runtimeRoot,
+			"--profile",
+			options.scratchHome.profileName,
+			"--environment",
+			options.scratchHome.environmentName,
+			"protocol-serve",
+		],
+		options,
+		new TextEncoder().encode(requestLines([catalogRequest])),
+	);
+	if (!catalogAnswered.ok) {
+		return { ok: false, message: `the catalog exchange could not run: ${catalogAnswered.message}` };
+	}
+	if (catalogAnswered.exitCode !== 0) {
+		return { ok: false, message: `the catalog exchange exited ${catalogAnswered.exitCode}: ${catalogAnswered.stderr}` };
+	}
+	let discovered: readonly CataloguedTool[];
+	try {
+		discovered = catalogOf(resultOf(answerFor(answeredDocuments(catalogAnswered.stdout), "catalog")));
+	} catch (error) {
+		return { ok: false, message: error instanceof Error ? error.message : String(error) };
+	}
+
+	const swept = discovered.filter(
+		(tool) => isControlTool(tool) && !controlsNeedingPriorWork.some((held) => held === tool.name),
+	);
+	const requests: readonly ProtocolRequest[] = swept.map((tool, position) => {
+		// A control that names an operation is given the one this scenario's own
+		// command call produced, so the daemon answers about a real operation
+		// rather than about an invented name. Everything else the schema
+		// requires comes from the schema itself.
+		const carried = minimalArgumentsFor(tool, `${options.labelValue}-sweep-${position}`);
+		for (const member of Object.keys(carried)) {
+			if (member === "operation_identifier") {
+				carried[member] = operationIdentifier;
+			}
+		}
+		return {
+			identifier: `sweep-${position}`,
+			method: "tools/call",
+			parameters: { name: tool.name, arguments: carried },
+		};
+	});
+	const answered = await invoke(
+		handle,
+		[
+			runner(),
+			"--runtime-root",
+			options.runtimeRoot,
+			"--profile",
+			options.scratchHome.profileName,
+			"--environment",
+			options.scratchHome.environmentName,
+			"protocol-serve",
+		],
+		options,
+		new TextEncoder().encode(requestLines(requests)),
+	);
+	if (!answered.ok) {
+		return { ok: false, message: `the sweep exchange could not run: ${answered.message}` };
+	}
+	if (answered.exitCode !== 0) {
+		return { ok: false, message: `the sweep exchange exited ${answered.exitCode}: ${answered.stderr}` };
+	}
+	let answers: readonly AnsweredDocument[];
+	try {
+		answers = answeredDocuments(answered.stdout);
+	} catch (error) {
+		return { ok: false, message: error instanceof Error ? error.message : String(error) };
+	}
+
+	// A call that reached the daemon is answered by it: what comes back names
+	// something about an operation rather than a local failure, which is what
+	// this process writes when its own checks stopped the call before anything
+	// was sent. That distinction is the whole assertion, so it is read off the
+	// answer's own tag rather than inferred from anything else.
+	const refusedLocally: string[] = [];
+	const answeredNames: string[] = [];
+	for (const [position, tool] of swept.entries()) {
+		let result: Record<string, unknown>;
+		try {
+			result = resultOf(answerFor(answers, `sweep-${position}`));
+		} catch (error) {
+			return { ok: false, message: `${tool.name} was refused by the protocol: ${error instanceof Error ? error.message : String(error)}` };
+		}
+		const content = result["content"];
+		const carried = Array.isArray(content) ? contentOf(content) : undefined;
+		if (carried !== undefined && carried["outcome"] === "local_application_error") {
+			refusedLocally.push(tool.name);
+			continue;
+		}
+		answeredNames.push(tool.name);
+	}
+	if (refusedLocally.length > 0) {
+		return {
+			ok: false,
+			message: `${refusedLocally.length} of the ${swept.length} read-only tools in the catalog were answered with a local failure and never reached the daemon: ${refusedLocally.join(", ")}; the daemon said: ${answered.stderr.trim().slice(0, 1200)}`,
+		};
+	}
+	return { ok: true, answered: answeredNames, notDriven: [...controlsNeedingPriorWork] };
 }
