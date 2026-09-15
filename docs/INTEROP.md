@@ -44,7 +44,7 @@ Every run executes the following scenarios in deterministic order. Each scenario
 - **Failure Category:** Proves that the client and agent agree on the category, status, and retryability of a failed operation.
 - **Authentication Refusal:** Proves that a client with wrong credentials is refused by the agent and does not admit an operation key to the agent's store.
 - **Severed Submission:** Proves that the client handles a transport severance during submission according to the contract.
-- **Model Context Protocol:** Proves that the shipped client's `protocol-serve` server answers a real consumer over its standard-input/standard-output interface: `tools/list` returns a non-empty catalog in which every tool carries a name and an input schema, and a real `tools/call` returns a well-formed result rather than a JSON-RPC error.
+- **Model Context Protocol:** Proves that the shipped client's `protocol-serve` server answers a real consumer over its standard-input/standard-output interface: `tools/list` returns a non-empty catalog in which every tool carries a name and an input schema, a control call (`operation-list`) answers its own `operation_list_page` document rather than a JSON-RPC error, and a registry command call (`create_asset_folder`) reaches the agent — its answer is a receipt, the operation it names reaches a terminal disposition through the client's own wait, and the folder it declared answers on the agent's route with the title the call declared.
 
 ## The Report
 
