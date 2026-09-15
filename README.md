@@ -13,6 +13,19 @@ The harness proves that the exact bytes named in the pinning documents produce t
 
 **Fetch-nothing rule:** Only `scripts/prepare_interop_images` fetches data from the network. The run command (`bun run interop`) operates entirely offline using the pinned bytes and images.
 
+**Which bun:** the pinned runtime is `.tooling/bun-linux-x64/bun`, installed by `scripts/prepare_tooling`. `bun run interop` resolves the `bun` on your `PATH` through the script's shebang, so put that directory on it first:
+
+```sh
+export PATH="$PWD/.tooling/bun-linux-x64:$PATH"
+bun run interop
+```
+
+Or hand the file straight to the pinned binary, which needs nothing on `PATH`:
+
+```sh
+.tooling/bun-linux-x64/bun scripts/interop
+```
+
 ## The Three Run Modes
 
 A run is configured by editing `support/slingshot-side.toml` and `support/agent-side.toml`.
