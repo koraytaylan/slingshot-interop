@@ -49,7 +49,7 @@ async function startEcho(): Promise<{ port: number; close: () => Promise<void> }
 async function startProxy(upstreamPort: number): Promise<{
 	port: number;
 	controlPort: number;
-	arm: (point: string) => { ok: boolean };
+	arm: (point: string, options?: any) => { ok: boolean };
 	stop: () => Promise<void>;
 }> {
 	const start = await startSeveranceProxy({
@@ -67,8 +67,8 @@ async function startProxy(upstreamPort: number): Promise<{
 	return {
 		port: start.port,
 		controlPort: start.controlPort,
-		arm: (point: string) => {
-			const outcome = start.handle.arm(point);
+		arm: (point: string, options?: any) => {
+			const outcome = start.handle.arm(point, options);
 			return { ok: outcome.ok };
 		},
 		stop: () => start.handle.stop(),
@@ -142,18 +142,42 @@ describe("severance proxy over real sockets", () => {
 		expect(result.data).toEqual(payload);
 	});
 
-	test("armed through the control channel, the client side observes a reset, distinguished from an orderly close", async () => {
+	test("armed immediately through the control channel, the client side observes a reset", async () => {
 		const echo = await startEcho();
 		const proxy = await startProxy(echo.port);
 		const armed = await fetch(`http://${loopback}:${proxy.controlPort}/arm/client`, { method: "POST" });
 		expect(armed.status).toBe(200);
 		const payload = Buffer.from("request-severed");
 		const result = await connectAndSend(proxy.port, payload);
-		// The reset, not an orderly close: the read must end in ECONNRESET.
 		expect(result.ending).toBe("reset");
-		// And it is not the EOF an orderly close would produce: the distinction
-		// asserted above is the whole point of the severance.
 		expect(result.ending).not.toBe("eof");
+	});
+
+	test("armed in response mode, request passes but answer is reset", async () => {
+		const echo = await startEcho();
+		const proxy = await startProxy(echo.port);
+		const armed = await fetch(`http://${loopback}:${proxy.controlPort}/arm/client?mode=response`, { method: "POST" });
+		expect(armed.status).toBe(200);
+		const payload = Buffer.from("request-response-severed");
+		const result = await connectAndSend(proxy.port, payload);
+		// The request reaches the echo server, and the echo server's first byte back triggers the reset.
+		expect(result.ending).toBe("reset");
+	});
+
+	test("threshold skips connections before severing", async () => {
+		const echo = await startEcho();
+		const proxy = await startProxy(echo.port);
+		const armed = await fetch(`http://${loopback}:${proxy.controlPort}/arm/client?threshold=1`, { method: "POST" });
+		expect(armed.status).toBe(200);
+		const payload = Buffer.from("request-threshold");
+
+		// First connection should pass untouched.
+		const result1 = await connectAndSend(proxy.port, payload, { resolveOnData: true });
+		expect(result1.ending).toBe("data");
+
+		// Second connection should be reset.
+		const result2 = await connectAndSend(proxy.port, payload);
+		expect(result2.ending).toBe("reset");
 	});
 
 	test("the control channel refuses an unknown point", async () => {

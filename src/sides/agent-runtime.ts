@@ -94,13 +94,17 @@ export type AwaitActiveOutcome = { readonly ok: true } | {
 	readonly message: string;
 };
 
-// The two OSGi configurations the agent's own interop tier installs before the
-// bundle: the repoinit initializer creating the slingshot-agent-state system
-// user and its /var/slingshot-agent tree with its ACLs, and the service-user
-// mapping binding the bundle's subservices to that user. Both are read from
-// the agent repository's own ui.config content, so the harness carries no
-// second copy of their bytes. Without them every state-backed route answers
-// 500: the service login the bundle asks for maps to no system user.
+// The three OSGi configurations the agent's own interop tier installs before
+// the bundle: the repoinit initializer creating the slingshot-agent-state
+// system user and its /var/slingshot-agent tree with its ACLs, the service-user
+// mapping binding the bundle's subservices to that user, and the authorization
+// gate naming the group permitted to submit. All three are read from the agent
+// repository's own ui.config content, so the harness carries no second copy of
+// their bytes. Without the first two every state-backed route answers 500: the
+// service login the bundle asks for maps to no system user. Without the third
+// the gate's own default is not applied by the platform, the permitted set is
+// empty, and every submission is refused with a 403 — the gate's own rule being
+// that an empty set permits nobody rather than everybody.
 export type ConfigureStateOutcome = { readonly ok: true } | {
 	readonly ok: false;
 	readonly reason: "INSTALL_FAILED";
@@ -124,6 +128,7 @@ async function installStateConfiguration(
 	const names = [
 		"org.apache.sling.jcr.repoinit.RepositoryInitializer~slingshot-agent.cfg.json",
 		"org.apache.sling.serviceusermapping.impl.ServiceUserMapperImpl.amended~slingshot-agent.cfg.json",
+		"rs.slingshot.agent.http.AuthorizationGate.cfg.json",
 	];
 	// The configuration tree must exist before the configs are handed over:
 	// the console's own install route refuses an absent parent.
@@ -165,11 +170,173 @@ async function installStateConfiguration(
 	return { ok: true };
 }
 
+// The token route an Adobe author serves and a plain Sling starter does not.
+// Adobe documents that an authenticated author POST carries a short-lived
+// token fetched immediately beforehand from this route, and the client fetches
+// and sends one before every submission — it refuses to send a state-changing
+// request without it. The pinned starter carries neither the filter that issues
+// the token nor the filter that would validate it (docs/DEPLOYMENT.md in the
+// agent repository records both absences), so the harness supplies the route
+// the way it supplies the state configuration: the platform prerequisite the
+// pinned bytes do not carry, planted through the platform's own POST servlet
+// and named here rather than discovered as an unexplained refusal.
+const tokenRoute = "/libs/granite/csrf/token.json";
+
+// The token the planted route answers with. Nothing validates it here, because
+// the filter that would is the one the starter does not carry; the client's own
+// check is that the document names a non-empty value that is a usable header,
+// which is what the route is for.
+const plantedToken = "slingshot-interop-token";
+
+async function installForgeryToken(
+	port: number,
+	options: StartSlingRuntimeOptions,
+): Promise<ConfigureStateOutcome> {
+	const base = options.consoleBase ?? `http://127.0.0.1:${port}`;
+	const auth = Buffer.from(
+		`${options.consoleUsername}:${options.consolePassword}`,
+		"utf8",
+	).toString("base64");
+	const headers = { authorization: `Basic ${auth}` };
+	// The route's parents first: the platform's install route refuses an
+	// absent parent. A parent a sibling run already made is the outcome this
+	// needs, so a conflict is accepted and not replanted.
+	for (const folder of ["/libs/granite", "/libs/granite/csrf"]) {
+		const made = await fetch(`${base}${folder}`, {
+			method: "POST",
+			headers,
+			body: new URLSearchParams({ "jcr:primaryType": "sling:Folder" }),
+		});
+		if (made.status >= 400 && made.status !== 409) {
+			return {
+				ok: false,
+				reason: "INSTALL_FAILED",
+				message: `The author runtime refused the token route's folder ${folder} with ${made.status}.`,
+			};
+		}
+	}
+	// The token as an nt:file: the platform's own default GET servlet answers a
+	// file's bytes, so the client reads the document it expects without this
+	// harness writing a servlet of its own.
+	const planted = await fetch(`${base}${tokenRoute}`, {
+		method: "POST",
+		headers,
+		body: new URLSearchParams({
+			"jcr:primaryType": "nt:file",
+			"jcr:content/jcr:primaryType": "nt:resource",
+			"jcr:content/jcr:mimeType": "application/json",
+			"jcr:content/jcr:data": JSON.stringify({ token: plantedToken }),
+		}),
+	});
+	if (planted.status >= 400 && planted.status !== 409) {
+		return {
+			ok: false,
+			reason: "INSTALL_FAILED",
+			message: `The author runtime refused the forgery-token route with ${planted.status}.`,
+		};
+	}
+	return { ok: true };
+}
+
+// The group the agent permits, which an Adobe author has and a plain Sling
+// starter does not. The gate's own rule is that an empty permitted set permits
+// nobody rather than everybody, and the group it names by default is one an
+// AEM instance carries and the pinned starter does not — so without this the
+// caller is in none of the permitted groups and every submission is refused
+// before a body is read. The agent's own tier plants the same group through the
+// platform's user manager and puts the caller in it, which is what this does:
+// no second copy of a policy, only the platform state the pinned bytes lack.
+const permittedGroup = "administrators";
+
+// Where the platform's own user manager makes the group, changes its
+// membership, and answers for it.
+const groupCreatePath = "/system/userManager/group.create.html";
+const groupPath = `/system/userManager/group/${permittedGroup}.json`;
+const groupMembershipPath = `/system/userManager/group/${permittedGroup}.update.html`;
+const authenticatedCallerPath = "/system/userManager/user/admin";
+
+async function installPermittedGroup(
+	base: string,
+	headers: { readonly authorization: string },
+): Promise<ConfigureStateOutcome> {
+	// Asked for first, because a run against storage a sibling run already
+	// configured would otherwise be refused for making a group that is already
+	// there — a failure about the second start rather than about the product.
+	const existing = await fetch(`${base}${groupPath}`, {
+		headers,
+		signal: AbortSignal.timeout(30_000),
+	});
+	if (existing.status >= 400) {
+		const made = await fetch(`${base}${groupCreatePath}`, {
+			method: "POST",
+			headers,
+			body: new URLSearchParams({ ":name": permittedGroup }),
+			signal: AbortSignal.timeout(30_000),
+		});
+		if (made.status >= 400) {
+			return {
+				ok: false,
+				reason: "INSTALL_FAILED",
+				message: `The author runtime refused to make the permitted group ${permittedGroup} with ${made.status}; every submission is refused until it exists.`,
+			};
+		}
+	}
+	const joined = await fetch(`${base}${groupMembershipPath}`, {
+		method: "POST",
+		headers,
+		body: new URLSearchParams({ ":member": authenticatedCallerPath }),
+		signal: AbortSignal.timeout(30_000),
+	});
+	if (joined.status >= 400) {
+		return {
+			ok: false,
+			reason: "INSTALL_FAILED",
+			message: `The author runtime refused to put the caller into ${permittedGroup} with ${joined.status}; a caller in none of the permitted groups is refused before a body is read.`,
+		};
+	}
+	return { ok: true };
+}
+
+// The content root every scenario writes under, and the run's own folder
+// beneath it. A command that creates something refuses when its parent is not
+// there — the agent's own `parent_not_found` row — and a run whose scenarios
+// each wrote under a parent nothing had made would report that refusal rather
+// than the behavior it came to prove. So the run plants its own root once,
+// through the platform's own POST servlet, exactly as the reference runtime
+// has its content tree already.
+const scenarioContentRoot = "/content/interop";
+
+async function installScenarioContentRoot(
+	base: string,
+	labelValue: string,
+	headers: { readonly authorization: string },
+): Promise<ConfigureStateOutcome> {
+	// The root, then the run's folder: `create_asset_folder` refuses an absent
+	// parent, so the deepest path a scenario names is made before any scenario
+	// runs. A path a sibling run already made is the outcome this needs.
+	for (const folder of [scenarioContentRoot, `${scenarioContentRoot}/${labelValue}`]) {
+		const made = await fetch(`${base}${folder}`, {
+			method: "POST",
+			headers,
+			body: new URLSearchParams({ "jcr:primaryType": "sling:OrderedFolder" }),
+			signal: AbortSignal.timeout(30_000),
+		});
+		if (made.status >= 400 && made.status !== 409) {
+			return {
+				ok: false,
+				reason: "INSTALL_FAILED",
+				message: `The author runtime refused the scenario content root ${folder} with ${made.status}.`,
+			};
+		}
+	}
+	return { ok: true };
+}
+
 // The agent repository this run's bundle jar was built from. The agent side's
 // pinning names that repository, so the configuration bytes are read from it
 // rather than restated here.
 function agentRepositoryRoot(): string {
-	return process.env.SLINGSHOT_AGENT_ROOT ?? "/home/koraytaylan/Workspace/slingshot/slingshot-agent";
+	return process.env['SLINGSHOT_AGENT_ROOT'] ?? "/home/koraytaylan/Workspace/slingshot/slingshot-agent";
 }
 
 // The console's bundle listing: every bundle must report Active. The listing
@@ -336,6 +503,41 @@ export async function startSlingRuntime(
 		await handle.remove();
 		return configured;
 	}
+	const tokenised = await installForgeryToken(port, options);
+	if (!tokenised.ok) {
+		await handle.stop(options.values.stop.graceSeconds);
+		await handle.remove();
+		return tokenised;
+	}
+	const permitted = await installPermittedGroup(
+		options.consoleBase ?? `http://127.0.0.1:${port}`,
+		{
+			authorization: `Basic ${Buffer.from(
+				`${options.consoleUsername}:${options.consolePassword}`,
+				"utf8",
+			).toString("base64")}`,
+		},
+	);
+	if (!permitted.ok) {
+		await handle.stop(options.values.stop.graceSeconds);
+		await handle.remove();
+		return permitted;
+	}
+	const contentRoot = await installScenarioContentRoot(
+		options.consoleBase ?? `http://127.0.0.1:${port}`,
+		options.labelValue,
+		{
+			authorization: `Basic ${Buffer.from(
+				`${options.consoleUsername}:${options.consolePassword}`,
+				"utf8",
+			).toString("base64")}`,
+		},
+	);
+	if (!contentRoot.ok) {
+		await handle.stop(options.values.stop.graceSeconds);
+		await handle.remove();
+		return contentRoot;
+	}
 	const installed = await installBundle(port, options);
 	if (!installed.ok) {
 		await handle.stop(options.values.stop.graceSeconds);
@@ -374,7 +576,58 @@ export async function startSlingRuntime(
 	if (!stateReady.ok) {
 		return stateReady;
 	}
+	// The continuation-key authority is the last thing to become ready, and
+	// the client refuses an agent that advertises it as not ready — its own
+	// rule being that an agent whose tokens would not validate cannot be asked
+	// a paged question. The authority is established by the bundle's own
+	// lifecycle pass, which runs on activation and then on its interval, so a
+	// run that submitted before it settled would be refused for a reason that
+	// has nothing to do with the behavior it came to prove.
+	const authorityReady = await awaitContinuationAuthority(port, options);
+	if (!authorityReady.ok) {
+		return authorityReady;
+	}
 	return { ok: true, handle, port };
+}
+
+// Waits until the agent advertises its continuation-key authority as ready,
+// read from the agent's own capability document rather than a probe's
+// absence: the document is what the client reads, so a run waits on exactly
+// the signal the client would refuse on.
+export async function awaitContinuationAuthority(
+	port: number,
+	options: StartSlingRuntimeOptions,
+): Promise<AwaitActiveOutcome> {
+	const base = options.consoleBase ?? `http://127.0.0.1:${port}`;
+	const auth = Buffer.from(
+		`${options.consoleUsername}:${options.consolePassword}`,
+		"utf8",
+	).toString("base64");
+	const intervalMs = options.values.readiness.pollIntervalSeconds * 1000;
+	while (true) {
+		try {
+			const response = await fetch(`${base}/bin/slingshot/agent/capabilities`, {
+				headers: { authorization: `Basic ${auth}` },
+				signal: AbortSignal.timeout(10_000),
+			});
+			if (response.ok) {
+				const document = (await response.json()) as { readonly continuation_authority_ready?: unknown };
+				if (document.continuation_authority_ready === true) {
+					return { ok: true };
+				}
+			}
+		} catch {
+			// A document not yet answerable is a wait, not a failure.
+		}
+		if (options.activeDeadline.getTime() - Date.now() <= 0) {
+			return {
+				ok: false,
+				reason: "NEVER_BECAME_READY",
+				message: `The agent never advertised its continuation-key authority as ready by the deadline ${options.activeDeadline.toISOString()}; the client refuses an agent whose tokens it cannot use, so every submission would be refused for that reason rather than for the behavior under proof.`,
+			};
+		}
+		await Bun.sleep(Math.min(intervalMs, Math.max(1, options.activeDeadline.getTime() - Date.now())));
+	}
 }
 
 // Waits until the agent's lookup route answers its nothing-there status for

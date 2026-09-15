@@ -3,7 +3,7 @@
 
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { ResolvedSide } from "../sides/pinning.ts";
+import { type ResolvedSide } from "../sides/pinning.ts";
 
 export type ScenarioOutcome = {
 	readonly scenario: string;
@@ -33,7 +33,14 @@ export async function writeReport(
 	validateReportData(data);
 
 	const reportPath = join(workDirectory, `${data.label}.toml`);
+	// A report that cannot be rendered is a run whose result nobody can read,
+	// so it refuses rather than writing an absent document: the TOML writer
+	// answers nothing for a value it cannot render, and silently skipping the
+	// write would leave a run that reported success with no report on disk.
 	const toml = Bun.TOML.stringify(data);
+	if (toml === undefined) {
+		throw new Error(`the run report ${reportPath} could not be rendered as TOML`);
+	}
 	await writeFile(reportPath, toml);
 }
 

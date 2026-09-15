@@ -54,6 +54,6 @@ echo "quality: running the type check"
 # Stage 6: the whole unit suite, every discovered test file, no filter and
 # no exclusion.
 echo "quality: running the unit suite"
-"${BUN}" test
+"${BUN}" test --isolate
 
 echo "quality: every stage passed"

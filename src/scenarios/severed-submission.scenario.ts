@@ -10,7 +10,7 @@
 // the effect.
 
 import { chmod } from "node:fs/promises";
-import { agentAuthorization, envelope, invoke, machineArguments, resolveAgentOperationIdentifier, runner, waitTerminal } from "./support.ts";
+import { agentAuthorization, agentSnapshot, envelope, invoke, machineArguments, resolveAgentOperationIdentifier, runner, waitTerminal } from "./support.ts";
 import { severanceControlPort } from "../run/orchestration.ts";
 import { serializeProfile, sha256OfBytes, serializeSnapshot, profileDirectoryName, profileFileNameSuffix, configurationSnapshotFileName, type SnapshotSource } from "../sides/client-configuration.ts";
 import { join } from "node:path";
@@ -57,10 +57,11 @@ export const scenario = {
 		}
 
 		// 2. Submit a write through the proxy, arming the client-side
-		// severance point before the daemon connects: the relay forwards the
-		// request it was handed, then severs the client-facing half, so the
-		// request reaches the agent and the answer never comes back.
-		const arm = fetch(`http://127.0.0.1:${proxyControlPort(options)}/arm/client`, { method: "POST", signal: AbortSignal.timeout(10_000) });
+		// severance point before the daemon connects: we skip the first
+		// connection (capability discovery) and sever the answer to the
+		// second (the submission), so the request reaches the agent and
+		// the answer never comes back.
+		const arm = fetch(`http://127.0.0.1:${proxyControlPort(options)}/arm/client?mode=response&threshold=5`, { method: "POST", signal: AbortSignal.timeout(10_000) });
 		const submitted = await invoke(handle, [
 			runner(), ...machine, "create_asset_folder",
 			"--operation-key", operationKey,
@@ -122,22 +123,32 @@ export const scenario = {
 		// own view honestly holds the recovery park. The route's query
 		// member is the agent-side identifier the client derived at
 		// submission, not the receipt's local one.
+		//
+		// The proxy is disarmed first: it is the one the whole run shares, and
+		// the reads below are this scenario's own, not the client's. Leaving
+		// the point armed would also sever every later scenario's exchanges,
+		// which is a different thing to prove than this one.
+		const disarmed = await fetch(`http://127.0.0.1:${proxyControlPort(options)}/disarm/client`, { method: "POST", signal: AbortSignal.timeout(10_000) });
+		if (!disarmed.ok) {
+			return { ok: false, message: `disarming the proxy failed: ${disarmed.status} ${await disarmed.text()}` };
+		}
 		const resolved = await resolveAgentOperationIdentifier(options, profileName, operationIdentifier);
 		if (!resolved.ok) {
 			return resolved;
 		}
-		const lookup = await fetch(
-			`http://127.0.0.1:${options.values.ports.author}/bin/slingshot/agent/snapshot?agent_operation_identifier=${encodeURIComponent(resolved.agentOperationIdentifier)}`,
-			{ headers: { authorization: agentAuthorization("admin", "admin") }, signal: AbortSignal.timeout(10_000) },
-		);
+		const lookup = await agentSnapshot(options, resolved.agentOperationIdentifier);
 		if (!lookup.ok) {
-			return { ok: false, message: `the agent's lookup route answered ${lookup.status} for ${operationIdentifier}, and reconciliation needs the operation there` };
+			return { ok: false, message: `${lookup.message}, and reconciliation needs the operation there` };
 		}
-		const snapshot = await lookup.json() as Record<string, unknown>;
+		const snapshot = lookup.snapshot;
 		if (snapshot.kind !== "succeeded") {
-			return { ok: false, message: `the agent's record names ${String(snapshot.kind)} for ${operationKey} while the submission's answer was destroyed in transit: ${JSON.stringify(snapshot)}` };
+			return { ok: false, message: `the agent's record names ${snapshot.kind} for ${operationKey} while the submission's answer was destroyed in transit: ${JSON.stringify(snapshot)}` };
 		}
-		const content = await fetch(`http://127.0.0.1:${options.values.ports.author}${folderPath}`, {
+		// The rendering is asked for by name: a bare request for a folder is
+		// the platform's own 403 — it has no default renderer for a node that
+		// is not a page — and what proves the write is the document the
+		// platform renders for it.
+		const content = await fetch(`http://127.0.0.1:${options.values.ports.author}${folderPath}.json`, {
 			headers: { authorization: agentAuthorization("admin", "admin") },
 			signal: AbortSignal.timeout(10_000),
 		});

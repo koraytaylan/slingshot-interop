@@ -35,41 +35,66 @@ proxy = 8082
 chunk_bytes = 65536
 [planted_result]
 bytes = 10485760
+property_bytes = 65536
 			`);
 
 			// Create side documents with nothing recorded (unresolved)
-			writeFileSync(join(supportDir, "slingshot-side.toml"), `side = { name = "slingshot" }`);
-			writeFileSync(join(supportDir, "agent-side.toml"), `side = { name = "agent" }`);
+			writeFileSync(join(supportDir, "slingshot-side.toml"), `
+side = { name = "slingshot" }
+released = { version = "", path = "", digest = "" }
+candidate = { path = "", digest = "", commit = "", acknowledged = false }
+			`);
+			writeFileSync(join(supportDir, "agent-side.toml"), `
+side = { name = "agent" }
+released = { version = "", path = "", digest = "" }
+candidate = { path = "", digest = "", commit = "", acknowledged = false }
+			`);
 
-			// Mock container module to prove nothing is started
-			const containerMock = mock.module("../harness/container.ts", {
-				createNetwork: () => { throw new Error("Network should not be created"); },
-				removeNetwork: () => Promise.resolve({ ok: true }),
-				checkForLeaks: () => Promise.resolve({ ok: true }),
-			});
+		// Mock container module to prove nothing is started.
+		mock.module("../harness/container.ts", () => ({
+			createNetwork: () => { throw new Error("Network should not be created"); },
+			removeNetwork: () => Promise.resolve({ ok: true }),
+			checkForLeaks: () => Promise.resolve({ ok: true }),
+		}));
 
 			const outcome = await runInterop(baseDir, {
 				images: {
 					"tier-sling": { identifier: "sling" },
 					"client-runner": { identifier: "runner" },
+				"severance-proxy": { identifier: "proxy" },
 				},
 			});
 
 			expect(outcome.ok).toBe(false);
+			if (outcome.ok) {
+				throw new Error("Expected outcome to be a failure");
+			}
+
 			expect(outcome.reason).toBe("SIDE_UNRESOLVED");
+			if (outcome.reason !== "SIDE_UNRESOLVED") {
+				throw new Error("Expected reason to be SIDE_UNRESOLVED");
+			}
+
 			expect(outcome.refusals).toHaveLength(2);
+			if (outcome.refusals.length !== 2) {
+				throw new Error("Expected 2 refusals");
+			}
 			
 			const slingshotRefusal = outcome.refusals.find(r => r.side === "slingshot");
 			const agentRefusal = outcome.refusals.find(r => r.side === "agent");
 			
 			expect(slingshotRefusal).toBeDefined();
+			if (!slingshotRefusal) {
+				throw new Error("Slingshot refusal missing");
+			}
 			expect(agentRefusal).toBeDefined();
+			if (!agentRefusal) {
+				throw new Error("Agent refusal missing");
+			}
 			
 			// Verify ownerSteps are named (these depend on resolveSide implementation)
-			expect(typeof slingshotRefusal?.ownerStep).toBe("string");
-			expect(typeof agentRefusal?.ownerStep).toBe("string");
-
-			containerMock.restore();
+			expect(typeof slingshotRefusal.ownerStep).toBe("string");
+			expect(typeof agentRefusal.ownerStep).toBe("string");
 		} finally {
 			rmSync(baseDir, { recursive: true, force: true });
 		}

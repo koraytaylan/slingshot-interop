@@ -10,7 +10,7 @@
 // exactly this, and the runtime carries no such template, so the failure is
 // deterministic without planting anything.
 
-import { agentAuthorization, envelope, invoke, machineArguments, resolveAgentOperationIdentifier, runner, waitTerminal } from "./support.ts";
+import { agentSnapshot, envelope, invoke, machineArguments, resolveAgentOperationIdentifier, runner, waitTerminal } from "./support.ts";
 import type { StartClientRunnerOptions } from "../sides/client-runtime.ts";
 import type { ContainerHandle } from "../harness/container.ts";
 
@@ -73,45 +73,80 @@ export const scenario = {
 		// reclassification: the row the agent serves for this command
 		// declares `template_not_found` for a template that resolves to
 		// nothing, and the client's terminal failure must carry exactly it.
-		const failure = ended.envelope.failure as { readonly metadata?: Record<string, unknown> } | undefined;
-		const category = readString(failure?.metadata, "category");
+		//
+		// The client renders it as the failure object's own `metadata`
+		// member, which is one bounded string rather than a nested
+		// document: `machine_outcome_envelope.rs` declares `failure` as the
+		// semantic failure the agent reported, and
+		// `crates/slingshot-command-line/src/daemon_answer.rs` writes the
+		// category there.
+		const failure = ended.envelope.failure as { readonly metadata?: unknown } | undefined;
+		const category = typeof failure?.metadata === "string" ? failure.metadata : undefined;
 		if (category === undefined) {
 			return { ok: false, message: `the terminal error carried no category in its failure metadata: ${JSON.stringify(ended.envelope)}` };
 		}
 		const expected = "template_not_found";
-		if (category !== expected) {
-			return { ok: false, message: `the client reports category ${JSON.stringify(category)} where the agent's row for create_page declares ${JSON.stringify(expected)}` };
-		}
 		// A transport error here would be the client reclassifying a declared
-		// failure, which is the reading the scenario refuses.
+		// failure, which is the reading the scenario refuses. It is asked
+		// before the comparison with the expected category, because a category
+		// that is not the agent's fails that comparison whichever word it is
+		// and the message would then name the wrong fault.
 		if (category === "transport_error" || category === "result_unavailable") {
 			return { ok: false, message: `the client reported ${JSON.stringify(category)} instead of the declared failure` };
 		}
+		if (category !== expected) {
+			return { ok: false, message: `the client reports category ${JSON.stringify(category)} where the agent's row for create_page declares ${JSON.stringify(expected)}` };
+		}
 
-		// 4. Cross-check the agent's own record: terminal, and the same kind
-		// the client's terminal error asserts. The route's query member is
-		// the agent-side identifier the client derived at submission, not
-		// the receipt's local one.
+		// 4. Cross-check the agent's own record: terminal, the same category
+		// the client reported, and the same kind the client's terminal error
+		// asserts. The route's query member is the agent-side identifier the
+		// client derived at submission, not the receipt's local one.
 		const resolved = await resolveAgentOperationIdentifier(options, options.scratchHome.profileName, operationIdentifier);
 		if (!resolved.ok) {
 			return resolved;
 		}
-		const lookup = await fetch(
-			`http://127.0.0.1:${options.values.ports.author}/bin/slingshot/agent/snapshot?agent_operation_identifier=${encodeURIComponent(resolved.agentOperationIdentifier)}`,
-			{ headers: { authorization: agentAuthorization("admin", "admin") }, signal: AbortSignal.timeout(10_000) },
-		);
+		const lookup = await agentSnapshot(options, resolved.agentOperationIdentifier);
 		if (!lookup.ok) {
-			return { ok: false, message: `the agent's lookup route answered ${lookup.status} for ${operationIdentifier}` };
+			return lookup;
 		}
-		const snapshot = await lookup.json() as Record<string, unknown>;
+		const snapshot = lookup.snapshot;
 		if (snapshot.kind !== "failed") {
-			return { ok: false, message: `the agent's own record names ${String(snapshot.kind)} for ${operationIdentifier}, and the client reported a failure: ${JSON.stringify(snapshot)}` };
+			return { ok: false, message: `the agent's own record names ${snapshot.kind} for ${operationIdentifier}, and the client reported a failure: ${JSON.stringify(snapshot)}` };
 		}
-		return { ok: true, message: `failure category: the agent's declared ${JSON.stringify(category)} surfaced through the client unchanged` };
+		const declared = declaredCategory(snapshot.terminal_failure);
+		if (declared === undefined) {
+			return { ok: false, message: `the agent's own record names no declared failure for ${operationIdentifier}: ${JSON.stringify(snapshot)}` };
+		}
+		if (declared !== category) {
+			return { ok: false, message: `the client reports ${JSON.stringify(category)} where the agent's own record declares ${JSON.stringify(declared)} for the same operation` };
+		}
+		return { ok: true, message: `failure category: the agent's declared ${JSON.stringify(category)} surfaced through the client unchanged, and the agent's own record agrees` };
 	},
 };
 
-function readString(value: Record<string, unknown> | undefined, member: string): string | undefined {
-	const found = value?.[member];
-	return typeof found === "string" ? found : undefined;
+// The category the agent itself declared, read from its own record. The
+// snapshot carries the terminal failure document the agent committed, whose
+// `canonical_failure` is the semantic failure as the agent wrote it and whose
+// `failure` member is the category. Reading it here is what makes the
+// comparison two-sided rather than an assertion about one side's word.
+function declaredCategory(terminalFailure: unknown): string | undefined {
+	if (terminalFailure === null || typeof terminalFailure !== "object" || Array.isArray(terminalFailure)) {
+		return undefined;
+	}
+	const canonical = (terminalFailure as Record<string, unknown>)["canonical_failure"];
+	if (typeof canonical !== "string") {
+		return undefined;
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(canonical);
+	} catch {
+		return undefined;
+	}
+	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+		return undefined;
+	}
+	const named = (parsed as Record<string, unknown>)["failure"];
+	return typeof named === "string" ? named : undefined;
 }

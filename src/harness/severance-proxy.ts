@@ -37,10 +37,18 @@ export type SeveranceProxyOptions = {
 	readonly controlPort: number;
 };
 
+export type SeveranceMode = "immediate" | "response";
+
 export type SeveranceProxyHandle = {
 	// Arms the named point directly, the programmatic route the control
 	// channel itself goes through. Refuses an unknown point by name.
-	arm(point: string): { ok: true; armed: SeverancePoint } | { ok: false; reason: "unknown-point"; point: string };
+	arm(point: string, options?: { readonly threshold?: number; readonly mode?: SeveranceMode }): { ok: true; armed: SeverancePoint } | { ok: false; reason: "unknown-point"; point: string };
+	// Disarms the named point, so connections opened afterwards are relayed
+	// untouched again. Arming is a state the proxy holds rather than a one-shot
+	// act, and every scenario's profile points at this proxy, so a point left
+	// armed severs the exchanges of every scenario that runs after the one that
+	// armed it.
+	disarm(point: string): { ok: true; disarmed: SeverancePoint } | { ok: false; reason: "unknown-point"; point: string };
 	stop(): Promise<void>;
 };
 
@@ -63,7 +71,7 @@ type Relay = {
 };
 
 export async function startSeveranceProxy(options: SeveranceProxyOptions): Promise<SeveranceProxyStart> {
-	const armed = new Set<SeverancePoint>();
+	const armed = new Map<SeverancePoint, { mode: SeveranceMode; threshold: number; count: number }>();
 	const relays = new Set<Relay>();
 	const pending = new Map<Socket, Buffer[]>();
 
@@ -89,20 +97,38 @@ export async function startSeveranceProxy(options: SeveranceProxyOptions): Promi
 		port: options.controlPort,
 		fetch: async (request) => {
 			const url = new URL(request.url);
-			if (request.method !== "POST" || !url.pathname.startsWith("/arm/")) {
-				return new Response("control: POST /arm/<point>\n", { status: 404 });
+			if (request.method !== "POST") {
+				return new Response("control: POST /arm/<point> or /disarm/<point>\n", { status: 404 });
 			}
-			const point = decodeURIComponent(url.pathname.slice("/arm/".length));
+			const arming = url.pathname.startsWith("/arm/");
+			const disarming = url.pathname.startsWith("/disarm/");
+			if (!arming && !disarming) {
+				return new Response("control: POST /arm/<point> or /disarm/<point>\n", { status: 404 });
+			}
+			const point = decodeURIComponent(url.pathname.slice((arming ? "/arm/" : "/disarm/").length));
 			if (!isSeverancePoint(point)) {
 				// An unknown point is a refusal naming what was asked for, never a
 				// quiet no-op.
 				return new Response(`unknown severance point: ${point}\n`, { status: 400 });
 			}
-			armed.add(point);
-			for (const relay of relays) {
-				severRelay(relay, point);
+			if (disarming) {
+				armed.delete(point);
+				return new Response(`disarmed: ${point}\n`, { status: 200 });
 			}
-			return new Response(`armed: ${point}\n`, { status: 200 });
+
+			// Parse options from query string for the control channel
+			const params = url.searchParams;
+			const threshold = params.has("threshold") ? Number(params.get("threshold")) : 0;
+			const mode = params.get("mode") === "response" ? "response" : "immediate";
+
+			armed.set(point, { mode, threshold, count: 0 });
+			for (const relay of relays) {
+				const config = armed.get(point)!;
+				if (config.mode === "immediate") {
+					severRelay(relay, point);
+				}
+			}
+			return new Response(`armed: ${point} (mode=${mode}, threshold=${threshold})\n`, { status: 200 });
 		},
 	});
 
@@ -120,9 +146,22 @@ export async function startSeveranceProxy(options: SeveranceProxyOptions): Promi
 					hostname: options.upstreamAddress,
 					port: options.upstreamPort,
 					socket: {
-						data(_: Socket<undefined>, chunk: Buffer): void {
+						data(agent: Socket<undefined>, chunk: Buffer): void {
 							// Forwarded untouched: no inspection, no rewriting.
 							client.write(chunk);
+
+							// If armed in response mode, sever the relay now that the
+							// agent has started answering.
+							for (const [point, config] of armed) {
+								if (config.mode === "response" && config.count > config.threshold) {
+									// We need the relay object to sever. We'll find it in relays.
+									for (const relay of relays) {
+										if (relay.agent === agent) {
+											severRelay(relay, point);
+										}
+									}
+								}
+							}
 						},
 						close(): void {
 							client.end();
@@ -142,8 +181,11 @@ export async function startSeveranceProxy(options: SeveranceProxyOptions): Promi
 								agent.write(chunk);
 							}
 						}
-						for (const point of armed) {
-							severRelay(relay, point);
+						for (const [point, config] of armed) {
+							config.count++;
+							if (config.mode === "immediate" && config.count > config.threshold) {
+								severRelay(relay, point);
+							}
 						}
 					})
 					.catch(() => {
@@ -188,15 +230,27 @@ export async function startSeveranceProxy(options: SeveranceProxyOptions): Promi
 	});
 
 	const handle: SeveranceProxyHandle = {
-		arm(point: string) {
+		arm(point, options) {
 			if (!isSeverancePoint(point)) {
 				return { ok: false as const, reason: "unknown-point" as const, point };
 			}
-			armed.add(point);
+			const mode = options?.mode ?? "immediate";
+			const threshold = options?.threshold ?? 0;
+			armed.set(point, { mode, threshold, count: 0 });
 			for (const relay of relays) {
-				severRelay(relay, point);
+				const config = armed.get(point)!;
+				if (config.mode === "immediate") {
+					severRelay(relay, point);
+				}
 			}
 			return { ok: true as const, armed: point };
+		},
+		disarm(point) {
+			if (!isSeverancePoint(point)) {
+				return { ok: false as const, reason: "unknown-point" as const, point };
+			}
+			armed.delete(point);
+			return { ok: true as const, disarmed: point };
 		},
 		stop: async () => {
 			for (const relay of relays) {
@@ -211,8 +265,6 @@ export async function startSeveranceProxy(options: SeveranceProxyOptions): Promi
 	return {
 		ok: true,
 		handle,
-		// The control server's port is undefined only for a Unix-socket server;
-		// a TCP control listener always reports the port it bound.
 		port: forwarding.port,
 		controlPort: control.port ?? (() => { throw new Error("the control listener reported no port"); })(),
 	};

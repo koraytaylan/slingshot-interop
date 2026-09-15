@@ -18,9 +18,7 @@ import { dirname, join } from "node:path";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { runPodman } from "../harness/podman.ts";
-import type { PodmanOutcome } from "../harness/podman.ts";
 import {
-	startContainer,
 	type ContainerHandle,
 	type ContainerRefusal,
 } from "../harness/container.ts";
@@ -410,6 +408,7 @@ export async function startClientRunner(
 			return {
 				ok: true,
 				handle: {
+					ok: true,
 					id: containerId,
 					labelKey: options.values.label.key,
 					labelValue: options.labelValue,
@@ -538,17 +537,26 @@ export function isExecRefusal(outcome: ExecResult): outcome is ExecRefusal {
 // ever read from another's file. An exit code the invocation itself chose is
 // an answer, not an engine failure: the client's own CLI signals through it,
 // so the exit code and both streams travel to the caller.
+//
+// `stdinBytes` is how a leaf that reads its input is driven: the bytes travel
+// on the same bounded invocation path as every other command, so the protocol
+// server is reached through the run's own capture discipline rather than a
+// second path with its own limits.
 export async function execInContainer(
 	id: string,
 	command: readonly string[],
 	options: StartClientRunnerOptions,
+	stdinBytes?: Uint8Array,
 ): Promise<ExecResult> {
 	const captureDirectory = await mkdtemp(join(options.captureDirectory, "exec-"));
 	const outcome = await runPodman(
-		["exec", id, ...command],
+		// The input flag travels with the input: an invocation carrying no
+		// bytes is the invocation every other scenario makes, unchanged.
+		["exec", ...(stdinBytes !== undefined ? ["-i"] : []), id, ...command],
 		{
 			captureLimitBytes: options.values.capture.maximumBytes,
 			captureDirectory,
+			...(stdinBytes !== undefined ? { stdinBytes } : {}),
 			...(options.executable !== undefined ? { executable: options.executable } : {}),
 		},
 	);
@@ -556,7 +564,8 @@ export async function execInContainer(
 	if (!outcome.ok) {
 		if (outcome.reason === "failed") {
 			const match = outcome.message.match(/exited with code (\d+)/);
-			const exitCode = match ? parseInt(match[1], 10) : 1;
+			const captured = match?.[1];
+			const exitCode = captured === undefined ? 1 : parseInt(captured, 10);
 			const stdout = await readFile(outcome.stdoutPath, "utf8");
 			const stderr = await readFile(outcome.stderrPath, "utf8");
 			return { ok: true, exitCode, stdout, stderr };
@@ -601,11 +610,21 @@ export type SequenceOutcome =
 
 // The machine envelope the client's --machine form writes, read back from
 // the captured output: the answer comes from the client's own bytes, never
-// from a probe's absence.
+// from a probe's absence. Every member a scenario reads is declared, so a
+// member the client does not write is a compile-time absence rather than an
+// undefined read at run time: an index signature here would accept any name
+// and prove nothing about the envelope's shape.
 export type MachineEnvelope = {
 	readonly outcome: string;
 	readonly state?: string;
 	readonly resolved?: boolean;
+	readonly kind?: string;
+	readonly operation_identifier?: string;
+	readonly revision?: number;
+	readonly category?: string;
+	readonly evidence?: string;
+	readonly result?: Record<string, unknown>;
+	readonly failure?: { readonly metadata?: string };
 };
 
 export function parseMachineEnvelope(stdout: string): MachineEnvelope | null {

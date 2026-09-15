@@ -65,22 +65,66 @@ const bothRecorded = (releasedDigest: string) =>
 	});
 
 describe("readSideDocument", () => {
-	test("loads the committed slingshot document with explicit absent values", () => {
+	// The two committed documents are read, not re-typed here: what a run must
+	// be able to do is load whichever recording the holder has made, and a test
+	// that wrote the recorded digest down again would fail on the day somebody
+	// re-pinned over new bytes and would tell them nothing about the loader.
+	// So each document's own values are read back and asserted against the
+	// shape the loader must produce, and the loader's refusals are exercised
+	// above with documents built inline.
+	test("loads the committed slingshot document with the shape a run resolves", () => {
 		const document = readSideDocument(
 			new URL("../../support/slingshot-side.toml", import.meta.url).pathname,
 		);
 		expect(document.side.name).toBe("slingshot");
 		expect(document.released).toEqual({ version: "", path: "", digest: "" });
-		expect(document.candidate).toEqual({ path: "", digest: "", commit: "", acknowledged: false });
+		// A recorded candidate is one whose bytes, digest, commit and
+		// acknowledgement are all present; a recording missing any of them
+		// would refuse rather than resolve, so this asserts the pair the
+		// loader compares rather than a value copied from the file.
+		if (document.candidate.path.length > 0) {
+			expect(document.candidate.digest).toMatch(/^[0-9a-f]{64}$/);
+			expect(document.candidate.commit).toMatch(/^[0-9a-f]{40}$/);
+			expect(typeof document.candidate.acknowledged).toBe("boolean");
+		} else {
+			expect(document.candidate).toEqual({ path: "", digest: "", commit: "", acknowledged: false });
+		}
 	});
 
-	test("loads the committed agent document with explicit absent values", () => {
+	test("loads the committed agent document with the shape a run resolves", () => {
 		const document = readSideDocument(
 			new URL("../../support/agent-side.toml", import.meta.url).pathname,
 		);
 		expect(document.side.name).toBe("agent");
 		expect(document.released).toEqual({ version: "", path: "", digest: "" });
-		expect(document.candidate).toEqual({ path: "", digest: "", commit: "", acknowledged: false });
+		if (document.candidate.path.length > 0) {
+			expect(document.candidate.digest).toMatch(/^[0-9a-f]{64}$/);
+			expect(document.candidate.commit).toMatch(/^[0-9a-f]{40}$/);
+			expect(typeof document.candidate.acknowledged).toBe("boolean");
+		} else {
+			expect(document.candidate).toEqual({ path: "", digest: "", commit: "", acknowledged: false });
+		}
+	});
+
+	test("a recorded candidate whose bytes are on disk resolves, and its digest is the bytes' own", () => {
+		// The property a run depends on: whatever the committed documents
+		// record, the loader computes the digest from the bytes rather than
+		// trusting the recorded value, so a re-pin is proven by the run.
+		for (const name of ["slingshot", "agent"] as const) {
+			const document = readSideDocument(
+				new URL(`../../support/${name}-side.toml`, import.meta.url).pathname,
+			);
+			if (document.candidate.path.length === 0 || !document.candidate.acknowledged) {
+				continue;
+			}
+			const resolution = resolveSide(name, document, process.cwd());
+			expect("refused" in resolution).toBe(false);
+			if (!("resolved" in resolution)) {
+				throw new Error(`${name} did not resolve`);
+			}
+			expect(resolution.resolved.source).toBe("candidate");
+			expect(resolution.resolved.digest).toBe(document.candidate.digest);
+		}
 	});
 
 	test("refuses a document missing a key", () => {

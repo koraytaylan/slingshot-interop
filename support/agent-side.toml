@@ -44,11 +44,11 @@ path = "/home/koraytaylan/Workspace/slingshot/slingshot-agent/core/target/slings
 # Reason: the digest of the candidate bytes as the holder built them, so a
 # run proves the bytes on disk are the bytes the holder acknowledged; empty
 # until a holder supplies candidate bytes.
-digest = "f4cbe9457f97828cada59f87a7b4f7da2e640925673cdbca4b3242d57ac02917"
+digest = "a33be224cc01127df4f17b873de296ee83dc8339aaba978b67649d5c65c806f9"
 
 # Reason: the exact commit the candidate was built from, so every result
 # names the source it was about; empty until a holder supplies a candidate.
-commit = "2fb65bf3a2bab6aaec7cebf19538525987cadeb7"
+commit = "993dd6550b7f5f67b27719026009c67b4b24e1e9"
 
 # Reason: the holder's acknowledgement that these candidate bytes were built
 # in the sibling's own verified environment; only the holder sets it, and a

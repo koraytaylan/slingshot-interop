@@ -49,10 +49,10 @@ export const scenario = {
 		if (receipt.ok === false) {
 			return receipt;
 		}
-		if (receipt.outcome !== "operation_receipt") {
-			return { ok: false, message: `the detached submission answered ${String(receipt.outcome)} instead of a receipt: ${submitted.stdout}` };
+		if ((receipt as Record<string, unknown>)['outcome'] !== "operation_receipt") {
+			return { ok: false, message: `the detached submission answered ${String((receipt as Record<string, unknown>)['outcome'])} instead of a receipt: ${submitted.stdout}` };
 		}
-		const operationIdentifier = receipt.operation_identifier;
+		const operationIdentifier = (receipt as Record<string, unknown>)['operation_identifier'];
 		if (typeof operationIdentifier !== "string" || operationIdentifier.length === 0) {
 			return { ok: false, message: `the detached submission named no operation: ${submitted.stdout}` };
 		}
@@ -81,15 +81,19 @@ export const scenario = {
 			return { ok: false, message: `the agent's lookup route answered ${lookup.status} for ${operationIdentifier}` };
 		}
 		const snapshot = await lookup.json() as Record<string, unknown>;
-		const clientKind = ended.envelope.outcome === "operation_result" ? "succeeded" : "failed";
-		if (snapshot.kind !== clientKind) {
+		const clientKind = (ended.envelope as Record<string, unknown>)['outcome'] === "operation_result" ? "succeeded" : "failed";
+		if ((snapshot as Record<string, unknown>)['kind'] !== clientKind) {
 			return {
 				ok: false,
-				message: `disposition mismatch: the client says ${String(ended.envelope.outcome)}, the agent's own record says ${String(snapshot.kind)} for ${operationIdentifier}`,
+				message: `disposition mismatch: the client says ${(ended.envelope as Record<string, unknown>)['outcome']}, the agent's own record says ${(snapshot as Record<string, unknown>)['kind']} for ${operationIdentifier}`,
 			};
 		}
 		// The write's effect is there, under the address the command computed.
-		const content = await fetch(`http://127.0.0.1:${options.values.ports.author}${folderPath}`, {
+		// The rendering is asked for by name: a bare request for a folder is
+		// the platform's own 403 — it has no default renderer for a node that
+		// is not a page — and what proves the write is the document the
+		// platform renders for it.
+		const content = await fetch(`http://127.0.0.1:${options.values.ports.author}${folderPath}.json`, {
 			headers: { authorization: agentAuthorization("admin", "admin") },
 			signal: AbortSignal.timeout(10_000),
 		});
@@ -99,7 +103,3 @@ export const scenario = {
 		return { ok: true, message: "detached operation: acknowledged before completion, reached terminal, the agent's record agrees" };
 	},
 };
-
-function join3(...parts: readonly string[]): string {
-	return parts.join("/");
-}
