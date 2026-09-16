@@ -2826,6 +2826,18 @@ that the supplied binaries were built from those commits.
    using the reviewed sibling commits; it is not converted into an acceptance
    claim, and no pin or acknowledgement is changed to hide the failures.
 
+148. **Artifact lock failure was narrowed to the client lock acquisition path.**
+   A diagnostic client commit `7edbd69` preserves the exact derived lock path
+   in the refusal. Its isolated artifact-only candidate run still refuses before
+   transfer, identifying a concrete lock pathname under the container's
+   writable scratch home (`/tmp/interop-artifact-diagnostic.log`). The refusal
+   is therefore not a missing destination or an archive-verification problem;
+   the remaining question is why the lock's private-file/ownership checks reject
+   that container filesystem. No security check was relaxed. The diagnostic
+   candidate archive is `/tmp/interop-candidate-reviewed/slingshot-x86_64-unknown-linux-gnu.tar.gz`
+   with SHA-256
+   `df4f7ac130c39a17df410ccbb5673b83191c37e1515c4af6f80ca3fe7d1c9e5b`.
+
 147. **Exact-commit orchestration exposed deeper sibling incompatibilities after parser repair.**
    With `transition_revision` admitted as validated agent metadata, the temporary
    candidate run reached all eight scenarios. Five passed; artifact transfer
