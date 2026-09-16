@@ -3307,6 +3307,10 @@ that the supplied binaries were built from those commits.
   `20a3467f3599fd78fc4c10a9ea7c1e6340a54969` is committed and its rebuilt
   candidate SHA-256 is
   `251ee4be6e7d9975a275c7f776642cf3ad2d0c67652a3df6fe8de88e17eb6c19`.
+- Recovery test readings were named explicitly, reducing source-policy findings
+  to 292. Client commit `fba262b764c61500539109b408308f7dbb8f6d01` is
+  committed; its exact rebuilt candidate SHA-256 is
+  `e28230df4b1dbd2f29733fdfd8a73a0ff6e8041749779658dbb854f5da2d6d4e`.
 - Exact-candidate matrix rerun from client commit
   `20a3467f3599fd78fc4c10a9ea7c1e6340a54969` passed all 8/8 scenarios with
   clean teardown. The candidate SHA-256 was
