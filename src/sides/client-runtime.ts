@@ -18,6 +18,7 @@ import { dirname, join } from "node:path";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { runPodman } from "../harness/podman.ts";
+import { parseUniqueJson } from "../harness/bounded-json.ts";
 import {
 	type ContainerHandle,
 	type ContainerRefusal,
@@ -390,8 +391,9 @@ export async function startClientRunner(
 	];
 
 	const outcome = await runPodman(runArgs, {
+		deadline: options.deadline.getTime(),
 		captureLimitBytes: options.values.capture.maximumBytes,
-		captureDirectory: options.captureDirectory,
+		captureDirectory: await mkdtemp(join(options.captureDirectory, "runner-command-")),
 		...(options.executable !== undefined ? { executable: options.executable } : {}),
 	});
 
@@ -409,8 +411,8 @@ export async function startClientRunner(
 
 	const intervalMs = options.values.readiness.pollIntervalSeconds * 1000;
 	const deadlineMs = options.deadline.getTime();
-	while (true) {
-		if (await executableAnswers(containerId, options)) {
+	while (Date.now() < deadlineMs) {
+		if (await executableAnswers(containerId, options) && Date.now() < deadlineMs) {
 			return {
 				ok: true,
 				handle: {
@@ -420,42 +422,48 @@ export async function startClientRunner(
 					labelValue: options.labelValue,
 					network: options.network,
 					publishedPorts: [],
-					captureLogs: async () => {
+					captureLogs: async (deadline?: number) => {
 						const logs = await runPodman(["logs", containerId], {
+							...(deadline === undefined ? {} : { deadline }),
 							captureLimitBytes: options.values.capture.maximumBytes,
-							captureDirectory: options.captureDirectory,
+							captureDirectory: await mkdtemp(join(options.captureDirectory, "runner-command-")),
 							...(options.executable !== undefined ? { executable: options.executable } : {}),
 						});
 						if (!logs.ok) return logs;
 						return { ok: true, logPath: logs.stdoutPath };
 					},
-					stop: async (graceSeconds: number) => {
-						await runPodman(["kill", "--signal", "TERM", containerId], {
+					stop: async (graceSeconds: number, deadline?: number) => {
+						const signalled = await runPodman(["kill", "--signal", "TERM", containerId], {
+							...(deadline === undefined ? {} : { deadline }),
 							captureLimitBytes: options.values.capture.maximumBytes,
-							captureDirectory: options.captureDirectory,
+							captureDirectory: await mkdtemp(join(options.captureDirectory, "runner-command-")),
 							...(options.executable !== undefined ? { executable: options.executable } : {}),
 						});
-						const graceDeadline = Date.now() + graceSeconds * 1000;
+						if (!signalled.ok && signalled.reason === "deadline") return signalled;
+						const graceDeadline = Math.min(Date.now() + graceSeconds * 1000, deadline ?? Infinity);
 						while (Date.now() < graceDeadline) {
 							const inspect = await runPodman(["inspect", "-f", "{{.State.Running}}", containerId], {
+								...(deadline === undefined ? {} : { deadline }),
 								captureLimitBytes: options.values.capture.maximumBytes,
-								captureDirectory: options.captureDirectory,
+								captureDirectory: await mkdtemp(join(options.captureDirectory, "runner-command-")),
 								...(options.executable !== undefined ? { executable: options.executable } : {}),
 							});
 							if (inspect.ok && (await readFile(inspect.stdoutPath, "utf8")).trim() === "false") {
 								return { ok: true, command: ["stop"], exitCode: 0, stdoutPath: "", stderrPath: "" };
 							}
-							await Bun.sleep(200);
+							await Bun.sleep(Math.min(200, Math.max(1, graceDeadline - Date.now())));
 						}
 						return (await runPodman(["kill", "--signal", "KILL", containerId], {
+							...(deadline === undefined ? {} : { deadline }),
 							captureLimitBytes: options.values.capture.maximumBytes,
-							captureDirectory: options.captureDirectory,
+							captureDirectory: await mkdtemp(join(options.captureDirectory, "runner-command-")),
 							...(options.executable !== undefined ? { executable: options.executable } : {}),
 						}));
 					},
-					remove: async () => runPodman(["rm", "-f", "-t", "0", containerId], {
+					remove: async (deadline?: number) => runPodman(["rm", "-f", "-t", "0", containerId], {
+						...(deadline === undefined ? {} : { deadline }),
 						captureLimitBytes: options.values.capture.maximumBytes,
-						captureDirectory: options.captureDirectory,
+						captureDirectory: await mkdtemp(join(options.captureDirectory, "runner-command-")),
 						...(options.executable !== undefined ? { executable: options.executable } : {}),
 					}),
 				},
@@ -470,27 +478,35 @@ export async function startClientRunner(
 
 	// Handle timeout
 	const id = containerId;
-	await runPodman(["kill", "--signal", "KILL", id], {
+	const killed = await runPodman(["kill", "--signal", "KILL", id], {
+		deadline: Date.now() + options.values.readiness.harnessSeconds * 1000,
 		captureLimitBytes: options.values.capture.maximumBytes,
-		captureDirectory: options.captureDirectory,
+		captureDirectory: await mkdtemp(join(options.captureDirectory, "runner-command-")),
 		...(options.executable !== undefined ? { executable: options.executable } : {}),
 	});
 	const logs = await runPodman(["logs", id], {
+		deadline: Date.now() + options.values.readiness.harnessSeconds * 1000,
 		captureLimitBytes: options.values.capture.maximumBytes,
-		captureDirectory: options.captureDirectory,
+		captureDirectory: await mkdtemp(join(options.captureDirectory, "runner-command-")),
 		...(options.executable !== undefined ? { executable: options.executable } : {}),
 	});
-	await runPodman(["rm", "-f", "-t", "0", id], {
+	const removed = await runPodman(["rm", "-f", "-t", "0", id], {
+		deadline: Date.now() + options.values.readiness.harnessSeconds * 1000,
 		captureLimitBytes: options.values.capture.maximumBytes,
-		captureDirectory: options.captureDirectory,
+		captureDirectory: await mkdtemp(join(options.captureDirectory, "runner-command-")),
 		...(options.executable !== undefined ? { executable: options.executable } : {}),
 	});
 
+	const cleanupFailures = [
+		...(killed.ok ? [] : [`kill: ${killed.message}`]),
+		...(removed.ok ? [] : [`removal: ${removed.message}`]),
+	];
+	const cleanupEvidence = cleanupFailures.length ? `; cleanup: ${cleanupFailures.join("; ")}` : "";
 	if (!logs.ok) {
 		return {
 			ok: false,
 			reason: "NEVER_BECAME_READY",
-			message: `The container ${id} did not become ready by the deadline ${options.deadline.toISOString()} and its log could not be captured: ${logs.message}`,
+			message: `The container ${id} did not become ready by the deadline ${options.deadline.toISOString()} and its log could not be captured: ${logs.message}${cleanupEvidence}`,
 			logPath: "",
 			logTail: "",
 		};
@@ -499,7 +515,7 @@ export async function startClientRunner(
 	return {
 		ok: false,
 		reason: "NEVER_BECAME_READY",
-		message: `The container ${id} did not become ready by the deadline ${options.deadline.toISOString()}; the captured log at "${logs.stdoutPath}" holds what it printed: ${JSON.stringify(logText)}`,
+		message: `The container ${id} did not become ready by the deadline ${options.deadline.toISOString()}; the captured log at "${logs.stdoutPath}" holds what it printed: ${JSON.stringify(logText)}${cleanupEvidence}`,
 		logPath: logs.stdoutPath,
 		logTail: logText,
 	};
@@ -512,7 +528,7 @@ async function executableAnswers(
 	id: string,
 	options: StartClientRunnerOptions,
 ): Promise<boolean> {
-	const outcome = await execInContainer(id, [runnerExecutablePath, "check-configuration"], options);
+	const outcome = await execInContainer(id, [runnerExecutablePath, "check-configuration"], options, undefined, options.deadline.getTime());
 	return outcome.ok && outcome.exitCode === 0;
 }
 
@@ -553,6 +569,7 @@ export async function execInContainer(
 	command: readonly string[],
 	options: StartClientRunnerOptions,
 	stdinBytes?: Uint8Array,
+	deadline?: number,
 ): Promise<ExecResult> {
 	const captureDirectory = await mkdtemp(join(options.captureDirectory, "exec-"));
 	const outcome = await runPodman(
@@ -562,20 +579,14 @@ export async function execInContainer(
 		{
 			captureLimitBytes: options.values.capture.maximumBytes,
 			captureDirectory,
+			requireCompleteCapture: true,
+			...(deadline !== undefined ? { deadline } : {}),
 			...(stdinBytes !== undefined ? { stdinBytes } : {}),
 			...(options.executable !== undefined ? { executable: options.executable } : {}),
 		},
 	);
 
-	if (!outcome.ok) {
-		if (outcome.reason === "failed") {
-			const match = outcome.message.match(/exited with code (\d+)/);
-			const captured = match?.[1];
-			const exitCode = captured === undefined ? 1 : parseInt(captured, 10);
-			const stdout = await readFile(outcome.stdoutPath, "utf8");
-			const stderr = await readFile(outcome.stderrPath, "utf8");
-			return { ok: true, exitCode, stdout, stderr };
-		}
+	if (!outcome.ok && outcome.reason !== "failed") {
 		return {
 			ok: false,
 			message: outcome.message,
@@ -585,9 +596,16 @@ export async function execInContainer(
 		};
 	}
 
-	const stdout = await readFile(outcome.stdoutPath, "utf8");
-	const stderr = await readFile(outcome.stderrPath, "utf8");
-	return { ok: true, exitCode: outcome.exitCode, stdout, stderr };
+	const capturedExit = outcome.ok ? undefined : outcome.message.match(/exited with code (\d+)/)?.[1];
+	const exitCode = outcome.ok ? outcome.exitCode : capturedExit === undefined ? 1 : Number(capturedExit);
+	try {
+		const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+		const stdout = decoder.decode(await readFile(outcome.stdoutPath));
+		const stderr = decoder.decode(await readFile(outcome.stderrPath));
+		return { ok: true, exitCode, stdout, stderr };
+	} catch {
+		return { ok: false, exitCode, stdout: "", stderr: "", message: "Client output capture could not be read as strict UTF-8." };
+	}
 }
 
 // The three answers the contract's sequence gives, each read from captured
@@ -634,12 +652,15 @@ export type MachineEnvelope = {
 };
 
 export function parseMachineEnvelope(stdout: string): MachineEnvelope | null {
-	const line = stdout.split("\n").find((candidate) => candidate.trim().startsWith("{"));
-	if (line === undefined) {
-		return null;
-	}
 	try {
-		return JSON.parse(line) as MachineEnvelope;
+		// Machine stdout is one answer. Selecting a plausible line hides a
+		// contradictory second answer or output that corrupted the protocol.
+		const parsed: unknown = parseUniqueJson(stdout);
+		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+		const outcome = (parsed as Record<string, unknown>)["outcome"];
+		if (typeof outcome !== "string" || outcome.length === 0) return null;
+		// Each scenario still validates its expected tag and payload fields.
+		return parsed as MachineEnvelope;
 	} catch {
 		return null;
 	}
@@ -669,6 +690,8 @@ export async function proveClientSequence(
 		id,
 		[runnerExecutablePath, "check-configuration", ...machine],
 		options,
+		undefined,
+		Date.now() + options.values.readiness.harnessSeconds * 1000,
 	);
 	const configurationEnvelope = configuration.ok
 		? parseMachineEnvelope(configuration.stdout)
@@ -695,6 +718,8 @@ export async function proveClientSequence(
 		id,
 		[runnerExecutablePath, "daemon", "ping", ...machine],
 		options,
+		undefined,
+		Date.now() + options.values.readiness.harnessSeconds * 1000,
 	);
 	const pingEnvelope = ping.ok ? parseMachineEnvelope(ping.stdout) : undefined;
 	// The daemon is absent before anything starts it: the client's own ping
@@ -721,6 +746,8 @@ export async function proveClientSequence(
 		id,
 		[runnerExecutablePath, "daemon", "start", ...machine],
 		options,
+		undefined,
+		Date.now() + options.values.readiness.harnessSeconds * 1000,
 	);
 	const startEnvelope = start.ok ? parseMachineEnvelope(start.stdout) : undefined;
 	if (

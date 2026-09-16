@@ -262,8 +262,13 @@ describe("the planted jar against the built tier-sling image", () => {
 				// test reads: the poll interval, and a wait bound a small multiple
 				// of it — the machinery must honor the declared instant, not a
 				// hidden fixed timeout.
-				const activeDeadline = new Date(Date.now() + 6 * values.readiness.pollIntervalSeconds * 1000);
+				// Include cold startup and configuration in this absolute budget;
+				// the activation poll must not fetch again after it has expired.
+				const activeBudgetMs = 30 * values.readiness.pollIntervalSeconds * 1000;
+				const activeDeadline = new Date(Date.now() + activeBudgetMs);
+				let configurations: readonly { readonly name: string; readonly digest: string }[] = [];
 				const options: StartSlingRuntimeOptions = {
+					configurationObserved: inputs => { configurations = inputs; },
 					image: builtImage(),
 					values,
 					network,
@@ -282,16 +287,30 @@ describe("the planted jar against the built tier-sling image", () => {
 				if (outcome.ok) {
 					throw new Error("the unresolvable bundle unexpectedly became active");
 				}
-				expect(outcome.reason).toBe("NEVER_BECAME_READY");
+				expect(outcome.reason, outcome.message).toBe("NEVER_BECAME_READY");
+				expect(configurations).toHaveLength(3);
+				for (const input of configurations) expect(input.digest).toMatch(/^[0-9a-f]{64}$/);
 				// The refusal lands at the declared deadline, not before and not
 				// on some hidden bound of its own.
-				expect(elapsed).toBeGreaterThanOrEqual(6 * values.readiness.pollIntervalSeconds * 1000);
+				expect(elapsed).toBeGreaterThanOrEqual(activeBudgetMs);
 				expect(elapsed).toBeLessThan(120_000);
 				// It names what the bundle actually became: installed, stuck in
 				// the Installed state, never Active.
 				expect(outcome.message).toContain("Installed");
 				expect(outcome.message).toContain("org.example.planted.unresolvable");
 				expect(outcome.message).toContain("did not become active");
+				const remaining = await checkForLeaks({
+					labelKey: values.label.key,
+					labelValue,
+					captureLimitBytes: captureLimit,
+					captureDirectory: directory!,
+				});
+				// Only the caller-owned network remains after a failed start.
+				expect(remaining.ok).toBe(false);
+				if (!remaining.ok) {
+					expect(remaining.containers, remaining.message).toEqual([]);
+					expect(remaining.networks).toEqual([network]);
+				}
 				if (!("message" in outcome) || !("reason" in outcome)) {
 					throw new Error("unexpected refusal shape");
 				}

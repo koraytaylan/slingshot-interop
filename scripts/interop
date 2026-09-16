@@ -6,107 +6,63 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { runInterop } from "../src/run/orchestration.ts";
 import { stderrProgress } from "../src/run/progress.ts";
-import { readSideDocument, resolveSide } from "../src/sides/pinning.ts";
-import { writeReport } from "../src/run/report.ts";
+import { reportExitCode, writeReport, writeRefusalReport } from "../src/run/report.ts";
 
 const baseDirectory = process.cwd();
-const imagesToml = readFileSync(join(baseDirectory, "support/interop-images.toml"), "utf8");
-const images = Bun.TOML.parse(imagesToml);
+let stage = "prepare-inputs";
 
-// Map the TOML sections to the identifier format expected by runInterop.
-// A bare digest inspects nothing locally (Podman resolves "sha256:..." only
-// against digests of untagged image IDs), so the pinned image is named the
-// way the verification names it: name@digest.
-const imageIdentifiers: Record<string, { readonly identifier: string }> = {
-	"tier-sling": { identifier: `${images["tier-sling"].name}@${images["tier-sling"].identifier}` },
-	"client-runner": { identifier: `${images["client-runner"].name}@${images["client-runner"].identifier}` },
-	"severance-proxy": { identifier: `${images["severance-proxy"].name}@${images["severance-proxy"].identifier}` },
-};
-
-const outcome = await runInterop(baseDirectory, {
-	images: imageIdentifiers,
-	// Progress goes to standard error, one line per step, while the run is
-	// running. A run takes minutes and says nothing on standard output until
-	// it has finished, so a reader watching a terminal needs the steps as they
-	// happen; keeping them off standard output leaves the report the only
-	// thing on it, which is what something parsing this command reads.
-	progress: stderrProgress,
-});
-
-if (!outcome.ok) {
-	if (outcome.reason === "SIDE_UNRESOLVED") {
-		const steps = outcome.refusals
-			.map((r) => `side "${r.side}" is unresolved: ${r.ownerStep}`)
-			.join("; ");
-		console.error(`Run refused: ${steps}`);
-	} else {
-		console.error(`Run failed: ${outcome.message}`);
-	}
-	process.exit(1);
-}
-
-// Extract label and scenarios from report string
-const lines = outcome.report.split("\n");
-const label = lines[0].replace("Run label: ", "");
-const scenarios = [];
-let recordingScenarios = false;
-for (const line of lines) {
-	if (line === "Scenarios:") {
-		recordingScenarios = true;
-		continue;
-	}
-	if (recordingScenarios && line.startsWith("  - ")) {
-		const content = line.substring(4);
-		const [scenario, result] = content.split(": ");
-		if (result === "ok") {
-			scenarios.push({ scenario, ok: true });
-		} else {
-			scenarios.push({ 
-				scenario, 
-				ok: false, 
-				message: result.startsWith("failed (") ? result.substring(8, result.length - 1) : result 
-			});
+async function execute(): Promise<number> {
+	const imagesToml = readFileSync(join(baseDirectory, "support/interop-images.toml"), "utf8");
+	const images = Bun.TOML.parse(imagesToml) as Record<string, { name: string; identifier: string }>;
+	function imageIdentifier(name: string): { readonly identifier: string } {
+		const image = images[name];
+		if (image === undefined) {
+			throw new Error(`Missing prepared image: ${name}`);
 		}
+		return { identifier: `${image.name}@${image.identifier}` };
 	}
+
+	const options = {
+		images: {
+			"tier-sling": imageIdentifier("tier-sling"),
+			"client-runner": imageIdentifier("client-runner"),
+			"severance-proxy": imageIdentifier("severance-proxy"),
+		},
+		progress: stderrProgress,
+	};
+	stage = "orchestration";
+	const outcome = await runInterop(baseDirectory, options);
+
+	if (!outcome.ok) {
+		if (outcome.reason === "SIDE_UNRESOLVED") {
+			const steps = outcome.refusals
+				.map((r) => `side "${r.side}" is unresolved: ${r.ownerStep}`)
+				.join("; ");
+			console.error(`Run refused: ${steps}`);
+			await writeRefusalReport(baseDirectory, "side-resolution", steps);
+		} else {
+			if (outcome.data !== undefined) await writeReport(baseDirectory, outcome.data);
+			else await writeRefusalReport(baseDirectory, "setup", outcome.message);
+			console.error(`Run failed: ${outcome.message}`);
+		}
+		return 1;
+	}
+
+	// Keep the identities resolved before execution and complete diagnostics.
+	// Human-readable output is never parsed back into evidence.
+	await writeReport(baseDirectory, outcome.data);
+	console.log(outcome.report);
+	return reportExitCode(outcome.data);
 }
 
-// Resolve sides (they must be resolved since runInterop succeeded)
-const slingshotDoc = readSideDocument(join(baseDirectory, "support/slingshot-side.toml"));
-const agentDoc = readSideDocument(join(baseDirectory, "support/agent-side.toml"));
-const slingshotRes = resolveSide("slingshot", slingshotDoc, baseDirectory);
-const agentRes = resolveSide("agent", agentDoc, baseDirectory);
-
-if (slingshotRes.refused || agentRes.refused) {
-	console.error("Unexpected side resolution failure after successful run");
+try {
+	process.exit(await execute());
+} catch (failure) {
+	const message = failure instanceof Error ? failure.message : String(failure);
+	console.error(`Run failed during ${stage}: ${message}`);
+	try { await writeRefusalReport(baseDirectory, stage, message); }
+	catch (reportFailure) {
+		console.error(`Refusal report could not be written: ${reportFailure instanceof Error ? reportFailure.message : String(reportFailure)}`);
+	}
 	process.exit(1);
 }
-
-// Prepare image data
-const imagesReport: Record<string, { identifier: string; digest: string }> = {
-	"tier-sling": { 
-		identifier: images["tier-sling"].identifier, 
-		digest: images["tier-sling"].digest || images["tier-sling"].identifier 
-	},
-	"client-runner": { 
-		identifier: images["client-runner"].identifier, 
-		digest: images["client-runner"].digest || images["client-runner"].identifier 
-	},
-	"severance-proxy": { 
-		identifier: images["severance-proxy"].identifier, 
-		digest: images["severance-proxy"].digest || images["severance-proxy"].identifier 
-	},
-};
-
-// Write report to baseDirectory to ensure it survives teardown
-await writeReport(baseDirectory, {
-	label,
-	sides: {
-		slingshot: slingshotRes.resolved,
-		agent: agentRes.resolved,
-	},
-	images: imagesReport,
-	scenarios,
-});
-
-console.log(outcome.report);
-process.exit(0);

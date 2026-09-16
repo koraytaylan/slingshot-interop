@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright 2026 Koray Taylan Davgana
 
-import { writeReport, type ReportData } from "./report.ts";
+import { reportExitCode, writeReport, type ReportData } from "./report.ts";
 import { type ResolvedSide } from "../sides/pinning.ts";
 import { describe, test, expect, mock, spyOn, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
@@ -30,6 +30,21 @@ const validData: ReportData = {
 	],
 };
 
+describe("reportExitCode", () => {
+	test("fails a completed run containing a failed scenario", () => {
+		expect(reportExitCode(validData)).toBe(1);
+	});
+	test("does not accept an empty scenario inventory", () => {
+		expect(reportExitCode({ ...validData, scenarios: [] })).toBe(1);
+	});
+	test("accepts only a nonempty inventory of passing scenarios", () => {
+		expect(reportExitCode({ ...validData, scenarios: [{ scenario: "write-read", ok: true }] })).toBe(0);
+	});
+	test("cleanup failures fail the run even when every scenario passed", () => {
+		expect(reportExitCode({ ...validData, scenarios: [{ scenario: "write-read", ok: true }], failures: ["network removal refused"] })).toBe(1);
+	});
+});
+
 describe("writeReport", () => {
 	beforeEach(() => {
 		spyOn(fs, "writeFile").mockImplementation(async () => {});
@@ -42,6 +57,13 @@ describe("writeReport", () => {
 	test("writes a full report when all fields are present", async () => {
 		await writeReport("/tmp/work", validData);
 		expect(fs.writeFile).toHaveBeenCalled();
+	});
+
+	test("records verified configuration provenance alongside the candidate identities", async () => {
+		const digest = "a".repeat(64);
+		await writeReport("/tmp/work", { ...validData, agentConfiguration: [{ name: "fixture.cfg.json", digest }] });
+		expect(fs.writeFile).toHaveBeenCalledWith("/tmp/work/run-123.toml", expect.stringContaining(digest));
+		expect(fs.writeFile).toHaveBeenCalledWith("/tmp/work/run-123.toml", expect.stringContaining("fixture.cfg.json"));
 	});
 
 	test("refuses when label is missing", async () => {

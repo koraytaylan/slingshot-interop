@@ -1,0 +1,11 @@
+{
+  "scripts": [
+    "create service user slingshot-agent-state with path system/slingshot-agent",
+    "create path (sling:Folder) /var/slingshot-agent",
+    "create path (sling:Folder) /var/slingshot-agent/operations",
+    "create path (sling:Folder) /var/slingshot-agent/capacity",
+    "create path (sling:Folder) /var/slingshot-agent/capacity/callers",
+    "create path (sling:Folder) /var/slingshot-agent/subscriptions",
+    "set ACL for slingshot-agent-state\n    allow jcr:read,jcr:write,jcr:nodeTypeManagement,jcr:versionManagement on /var/slingshot-agent\nend"
+  ]
+}

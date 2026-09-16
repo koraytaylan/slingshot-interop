@@ -2,14 +2,15 @@
 // Copyright 2026 Koray Taylan Davgana
 
 // The detached-operation scenario: a submission carrying --detach is
-// acknowledged before the work is done, the client then observes the
+// acknowledged with a receipt, the client then observes the
 // operation to its terminal disposition, and the agent's own record agrees
 // with what the client reports. The two disagreeing is the failure this
 // scenario exists to catch.
 
-import { agentAuthorization, envelope, invoke, machineArguments, resolveAgentOperationIdentifier, runner, waitTerminal } from "./support.ts";
+import { agentAuthorization, agentSnapshot, envelope, invoke, machineArguments, resolveAgentOperationIdentifier, runner, waitTerminal } from "./support.ts";
 import type { StartClientRunnerOptions } from "../sides/client-runtime.ts";
 import type { ContainerHandle } from "../harness/container.ts";
+import { verifyCreatedFolder, verifyCreatedFolderResult } from "./created-folder.ts";
 
 export const scenario = {
 	async run(handle: ContainerHandle, options: StartClientRunnerOptions) {
@@ -29,8 +30,8 @@ export const scenario = {
 			return { ok: false, message: `daemon start exited ${started.exitCode}: ${started.stderr}` };
 		}
 
-		// 1. Submit a detached write: the acknowledgement is the receipt for
-		// work accepted but not finished.
+		// 1. Submit a detached write and require its receipt. Completion may
+		// race observation; this scenario does not measure that ordering.
 		const submitted = await invoke(handle, [
 			runner(), ...machine, "create_asset_folder",
 			"--operation-key", `${options.labelValue}-detached`,
@@ -63,6 +64,9 @@ export const scenario = {
 		if (!ended.ok) {
 			return ended;
 		}
+		if (ended.envelope.outcome !== "operation_result" || ended.envelope.result?.["repository_path"] !== folderPath) {
+			return { ok: false, message: `the detached operation did not return the expected successful folder result: ${JSON.stringify(ended.envelope)}` };
+		}
 
 		// 3. Cross-check with the harness's authenticated read of the agent's
 		// own lookup route: same operation, terminal, and the state the
@@ -73,33 +77,29 @@ export const scenario = {
 		if (!resolved.ok) {
 			return resolved;
 		}
-		const lookup = await fetch(
-			`http://127.0.0.1:${options.values.ports.author}/bin/slingshot/agent/snapshot?agent_operation_identifier=${encodeURIComponent(resolved.agentOperationIdentifier)}`,
-			{ headers: { authorization: agentAuthorization("admin", "admin") }, signal: AbortSignal.timeout(10_000) },
-		);
-		if (!lookup.ok) {
-			return { ok: false, message: `the agent's lookup route answered ${lookup.status} for ${operationIdentifier}` };
-		}
-		const snapshot = await lookup.json() as Record<string, unknown>;
-		const clientKind = (ended.envelope as Record<string, unknown>)['outcome'] === "operation_result" ? "succeeded" : "failed";
-		if ((snapshot as Record<string, unknown>)['kind'] !== clientKind) {
+		const lookup = await agentSnapshot(options, resolved.agentOperationIdentifier, resolved.targetDigest);
+		if (!lookup.ok) return lookup;
+		const snapshot = lookup.snapshot;
+		if (snapshot.kind !== "succeeded") {
 			return {
 				ok: false,
 				message: `disposition mismatch: the client says ${(ended.envelope as Record<string, unknown>)['outcome']}, the agent's own record says ${(snapshot as Record<string, unknown>)['kind']} for ${operationIdentifier}`,
 			};
 		}
+		const verifiedResult = verifyCreatedFolderResult(ended.envelope.result, snapshot.terminal_result, folderPath);
+		if (!verifiedResult.ok) return verifiedResult;
 		// The write's effect is there, under the address the command computed.
 		// The rendering is asked for by name: a bare request for a folder is
 		// the platform's own 403 — it has no default renderer for a node that
 		// is not a page — and what proves the write is the document the
 		// platform renders for it.
 		const content = await fetch(`http://127.0.0.1:${options.values.ports.author}${folderPath}.json`, {
+			redirect: "error",
 			headers: { authorization: agentAuthorization("admin", "admin") },
 			signal: AbortSignal.timeout(10_000),
 		});
-		if (!content.ok) {
-			return { ok: false, message: `the created folder does not answer on the agent: ${content.status} ${content.statusText}` };
-		}
-		return { ok: true, message: "detached operation: acknowledged before completion, reached terminal, the agent's record agrees" };
+		const verifiedContent = await verifyCreatedFolder(content, title, options.values.capture.maximumBytes);
+		if (!verifiedContent.ok) return verifiedContent;
+		return { ok: true, message: "detached operation: receipt observed, client and retained agent results match the requested folder, agent reports success and folder properties match" };
 	},
 };

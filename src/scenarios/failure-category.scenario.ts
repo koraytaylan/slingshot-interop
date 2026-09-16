@@ -13,6 +13,7 @@
 import { agentSnapshot, envelope, invoke, machineArguments, resolveAgentOperationIdentifier, runner, waitTerminal } from "./support.ts";
 import type { StartClientRunnerOptions } from "../sides/client-runtime.ts";
 import type { ContainerHandle } from "../harness/container.ts";
+import { parseUniqueJson } from "../harness/bounded-json.ts";
 
 export const scenario = {
 	async run(handle: ContainerHandle, options: StartClientRunnerOptions) {
@@ -106,7 +107,7 @@ export const scenario = {
 		if (!resolved.ok) {
 			return resolved;
 		}
-		const lookup = await agentSnapshot(options, resolved.agentOperationIdentifier);
+		const lookup = await agentSnapshot(options, resolved.agentOperationIdentifier, resolved.targetDigest);
 		if (!lookup.ok) {
 			return lookup;
 		}
@@ -114,7 +115,7 @@ export const scenario = {
 		if (snapshot.kind !== "failed") {
 			return { ok: false, message: `the agent's own record names ${snapshot.kind} for ${operationIdentifier}, and the client reported a failure: ${JSON.stringify(snapshot)}` };
 		}
-		const declared = declaredCategory(snapshot.terminal_failure);
+		const declared = declaredCategory(snapshot.terminal_failure, `${parent}/failing`);
 		if (declared === undefined) {
 			return { ok: false, message: `the agent's own record names no declared failure for ${operationIdentifier}: ${JSON.stringify(snapshot)}` };
 		}
@@ -130,7 +131,7 @@ export const scenario = {
 // `canonical_failure` is the semantic failure as the agent wrote it and whose
 // `failure` member is the category. Reading it here is what makes the
 // comparison two-sided rather than an assertion about one side's word.
-function declaredCategory(terminalFailure: unknown): string | undefined {
+function declaredCategory(terminalFailure: unknown, targetPath: string): string | undefined {
 	if (terminalFailure === null || typeof terminalFailure !== "object" || Array.isArray(terminalFailure)) {
 		return undefined;
 	}
@@ -140,13 +141,19 @@ function declaredCategory(terminalFailure: unknown): string | undefined {
 	}
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(canonical);
+		parsed = parseUniqueJson(canonical);
 	} catch {
 		return undefined;
 	}
 	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
 		return undefined;
 	}
-	const named = (parsed as Record<string, unknown>)["failure"];
+	// CreatePageRefusal is closed and binds the computed destination, not
+	// merely a category another page creation could also have reported.
+	const refusal = parsed as Record<string, unknown>;
+	if (Object.keys(refusal).length !== 2 || refusal["target_path"] !== targetPath) {
+		return undefined;
+	}
+	const named = refusal["failure"];
 	return typeof named === "string" ? named : undefined;
 }

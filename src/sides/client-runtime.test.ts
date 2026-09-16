@@ -142,7 +142,7 @@ describe("Client Runtime", () => {
 			values: {
 				label: { key: "test-label" },
 				capture: { maximumBytes: 1024 },
-				readiness: { pollIntervalSeconds: 1 },
+				readiness: { pollIntervalSeconds: 1, harnessSeconds: 120 },
 			} as any,
 			network: "test-net",
 			labelValue: "test-val",
@@ -152,6 +152,7 @@ describe("Client Runtime", () => {
 				rootPath: "/tmp/home/.config/slingshot",
 				profileName: "main",
 				environmentName: "dev",
+				expectedTargetDigests: {},
 			},
 			runtimeRoot: "/tmp/runtime",
 			captureDirectory: tmpdir(),
@@ -213,7 +214,12 @@ describe("Client Runtime", () => {
 					stderrPath: await writeTempFile(""),
 				});
 
+				const sequenceStartedAt = Date.now();
 				const outcome = await proveClientSequence(runner, options);
+				for (const [, commandOptions] of (runPodman as any).mock.calls.slice(-3)) {
+					expect(commandOptions.deadline).toBeGreaterThanOrEqual(sequenceStartedAt + options.values.readiness.harnessSeconds * 1000);
+					expect(commandOptions.deadline).toBeLessThanOrEqual(Date.now() + options.values.readiness.harnessSeconds * 1000);
+				}
 				expect(outcome.ok).toBe(true);
 				if (outcome.ok) {
 					expect(outcome.answers.configurationAccepted).toBe(true);

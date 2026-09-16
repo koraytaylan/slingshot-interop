@@ -13,6 +13,7 @@
 import { agentSnapshot, envelope, invoke, machineArguments, resolveAgentOperationIdentifier, runner, waitTerminal } from "./support.ts";
 import type { StartClientRunnerOptions } from "../sides/client-runtime.ts";
 import type { ContainerHandle } from "../harness/container.ts";
+import { verifyCreatedFolderResult } from "./created-folder.ts";
 
 export const scenario = {
 	async run(handle: ContainerHandle, options: StartClientRunnerOptions) {
@@ -110,44 +111,37 @@ export const scenario = {
 		if (read.envelope.outcome !== "operation_result") {
 			return { ok: false, message: `load_content_as_json ended as ${JSON.stringify(read.envelope)} instead of a result` };
 		}
-		const answer = read.envelope.result as Record<string, unknown> | undefined;
-		// The read's answer carries the loaded node itself, and the document
-		// below it is the agent's own rendering: one properties table keyed
-		// by name, with every value typed. The write's declaration must be
-		// equal in the read's answer.
-		const document = readMapping(answer, ["document"]);
-		const properties = readMapping(document, ["properties"]);
-		if (properties === undefined) {
-			return { ok: false, message: `load_content_as_json carried no properties table: ${JSON.stringify(read.envelope).slice(0, 2000)}` };
-		}
-		const readTitle = propertyValue(properties, "jcr:title");
-		if (readTitle !== title) {
-			return { ok: false, message: `the loaded document names the folder's title ${JSON.stringify(readTitle)} where the write declared ${JSON.stringify(title)}: ${JSON.stringify(properties).slice(0, 2000)}` };
-		}
-		const readType = propertyValue(properties, "jcr:primaryType");
-		if (readType !== "sling:OrderedFolder") {
-			return { ok: false, message: `the loaded document names the folder's type ${JSON.stringify(readType)} where the command's write is a sling:OrderedFolder: ${JSON.stringify(properties).slice(0, 2000)}` };
-		}
+		const verified = verifyLoadedFolder(read.envelope.result, folderPath, title);
+		if (!verified.ok) return verified;
 
 		// 4. Cross-check the disposition against the agent's own lookup route.
-		// The route's query member names the agent-side operation
-		// identifier, which the client derived at submission and recorded
-		// in its own state; the receipt's identifier is the local one.
 		const resolved = await resolveAgentOperationIdentifier(options, options.scratchHome.profileName, operationIdentifier);
-		if (!resolved.ok) {
-			return resolved;
+		if (!resolved.ok) return resolved;
+		const lookup = await agentSnapshot(options, resolved.agentOperationIdentifier, resolved.targetDigest);
+		if (!lookup.ok) return lookup;
+		if (lookup.snapshot.kind !== "succeeded") {
+			return { ok: false, message: `the agent's own record does not report success for ${operationIdentifier}: ${JSON.stringify(lookup.snapshot)}` };
 		}
-		const lookup = await agentSnapshot(options, resolved.agentOperationIdentifier);
-		if (!lookup.ok) {
-			return lookup;
-		}
-		const snapshot = lookup.snapshot;
-		if (snapshot.kind !== "succeeded") {
-			return { ok: false, message: `the agent's own record names ${snapshot.kind} for ${operationIdentifier}, and the client reported success: ${JSON.stringify(snapshot)}` };
-		}
-		return { ok: true, message: "write-then-read: the created asset folder was read back with the write's declaration equal to the read's answer" };
+		const verifiedResult = verifyCreatedFolderResult(ended.envelope.result, lookup.snapshot.terminal_result, folderPath);
+		if (!verifiedResult.ok) return verifiedResult;
+		return { ok: true, message: "write-then-read: client and retained agent creation results match the requested folder, whose content was read back with the write's declaration equal to the read's answer" };
 	},
 };
+
+export function verifyLoadedFolder(answer: unknown, folderPath: string, title: string): { readonly ok: boolean; readonly message: string } {
+	const result = readMapping(answer, []);
+	const document = readMapping(result, ["document"]);
+	if (result?.["path"] !== folderPath || result["disposition"] !== "inline" || document?.["path"] !== folderPath) {
+		return { ok: false, message: "loaded result and inline document must name the requested folder path" };
+	}
+	const properties = readMapping(document, ["properties"]);
+	if (properties === undefined) return { ok: false, message: "loaded document carried no properties table" };
+	if (propertyValue(properties, "jcr:title", "string") !== title
+		|| propertyValue(properties, "jcr:primaryType", "name") !== "sling:OrderedFolder") {
+		return { ok: false, message: "loaded folder title and primary type must match, including property type and single cardinality" };
+	}
+	return { ok: true, message: "loaded folder path and typed properties match" };
+}
 
 // The observation budget one scenario waits under, read from the values the
 // orchestration passes: the harness readiness bound is the one this wait
@@ -159,22 +153,22 @@ function waitBudget(options: StartClientRunnerOptions): number {
 function readMapping(value: unknown, path: readonly string[]): Record<string, unknown> | undefined {
 	let current: unknown = value;
 	for (const member of path) {
-		if (current === null || typeof current !== "object") {
+		if (current === null || typeof current !== "object" || Array.isArray(current)) {
 			return undefined;
 		}
 		current = (current as Record<string, unknown>)[member];
 	}
-	return current !== null && typeof current === "object" ? current as Record<string, unknown> : undefined;
+	return current !== null && typeof current === "object" && !Array.isArray(current) ? current as Record<string, unknown> : undefined;
 }
 
 // One property's value out of the agent's typed rendering: each entry is
-// `{ type, value }` (or `{ type, values }` for the plural form), and the
-// scenario reads the value a write declared.
-function propertyValue(properties: Record<string, unknown>, name: string): string | undefined {
+// carries property_type and cardinality alongside its singular value.
+function propertyValue(properties: Record<string, unknown>, name: string, propertyType: string): string | undefined {
 	const entry = properties[name];
-	if (entry === null || typeof entry !== "object") {
+	if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
 		return undefined;
 	}
 	const held = entry as Record<string, unknown>;
+	if (held["property_type"] !== propertyType || held["cardinality"] !== "single" || "values" in held) return undefined;
 	return typeof held["value"] === "string" ? String(held["value"]) : undefined;
 }

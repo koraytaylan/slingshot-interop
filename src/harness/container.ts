@@ -34,11 +34,13 @@ export type StartContainerOptions = {
 	readonly command: readonly string[];
 	// The readiness probe, called with the started container's id; a resolved
 	// true means ready.
-	readonly probe: (id: string) => Promise<boolean>;
+	readonly probe: (id: string, deadline: number) => Promise<boolean>;
 	readonly probeIntervalSeconds: number;
 	// The absolute instant by which the probe must have succeeded.
 	readonly deadline: Date;
 	readonly stopGraceSeconds: number;
+	// Fresh host-command budget for each failed-startup cleanup action.
+	readonly cleanupTimeoutSeconds: number;
 	readonly captureLimitBytes: number;
 	// Directory under which every capture file is kept. Each command gets its
 	// own fresh subdirectory, so concurrent captures never overwrite one
@@ -56,9 +58,9 @@ export type ContainerHandle = {
 	readonly publishedPorts: readonly number[];
 	// Captures everything the container has printed so far into a bounded
 	// file and names that file.
-	captureLogs(): Promise<{ ok: true; logPath: string } | PodmanRefusal>;
-	stop(graceSeconds: number): Promise<PodmanOutcome>;
-	remove(): Promise<PodmanOutcome>;
+	captureLogs(deadline?: number): Promise<{ ok: true; logPath: string } | PodmanRefusal>;
+	stop(graceSeconds: number, deadline?: number): Promise<PodmanOutcome>;
+	remove(deadline?: number): Promise<PodmanOutcome>;
 };
 
 export type ContainerRefusal =
@@ -94,6 +96,7 @@ async function freshCaptureDirectory(parent?: string): Promise<string> {
 export type NetworkOutcome = { readonly ok: true; readonly name: string } | PodmanRefusal;
 
 export type CreateNetworkOptions = {
+	readonly deadline?: number;
 	readonly labelKey: string;
 	readonly labelValue: string;
 	readonly captureLimitBytes: number;
@@ -109,6 +112,7 @@ export async function createNetwork(
 	const outcome = await runPodman(
 		["network", "create", "--label", `${options.labelKey}=${options.labelValue}`, name],
 		{
+			...(options.deadline === undefined ? {} : { deadline: options.deadline }),
 			captureLimitBytes: options.captureLimitBytes,
 			captureDirectory: directory,
 			...(options.executable !== undefined ? { executable: options.executable } : {}),
@@ -124,6 +128,7 @@ export async function removeNetwork(
 ): Promise<PodmanOutcome> {
 	const directory = await freshCaptureDirectory(options.captureDirectory);
 	const outcome = await runPodman(["network", "rm", "-f", name], {
+		...(options.deadline === undefined ? {} : { deadline: options.deadline }),
 		captureLimitBytes: options.captureLimitBytes,
 		captureDirectory: directory,
 		...(options.executable !== undefined ? { executable: options.executable } : {}),
@@ -135,9 +140,11 @@ export async function removeNetwork(
 async function captureLogs(
 	id: string,
 	options: StartContainerOptions,
+	deadline?: number,
 ): Promise<{ ok: true; logPath: string } | PodmanRefusal> {
 	const directory = await freshCaptureDirectory(options.captureDirectory);
 	const outcome = await runPodman(["logs", id], {
+		...(deadline === undefined ? {} : { deadline }),
 		captureLimitBytes: options.captureLimitBytes,
 		captureDirectory: directory,
 		...(options.executable !== undefined ? { executable: options.executable } : {}),
@@ -152,11 +159,16 @@ async function captureLogs(
 export async function startContainer(
 	options: StartContainerOptions,
 ): Promise<StartContainerOutcome> {
+	if (!Number.isFinite(options.cleanupTimeoutSeconds) || options.cleanupTimeoutSeconds <= 0) {
+		return { ok: false, reason: "START_FAILED", message: "Container startup requires a positive finite cleanup timeout.", stdoutTail: "", stderrTail: "" };
+	}
 	const run = async (
 		args: readonly string[],
+		deadline?: number,
 	): Promise<{ outcome: PodmanOutcome; stdoutText: string }> => {
 		const directory = await freshCaptureDirectory(options.captureDirectory);
 		const outcome = await runPodman(args, {
+			...(deadline === undefined ? {} : { deadline }),
 			captureLimitBytes: options.captureLimitBytes,
 			captureDirectory: directory,
 			...(options.executable !== undefined ? { executable: options.executable } : {}),
@@ -167,8 +179,8 @@ export async function startContainer(
 		await rm(directory, { recursive: true, force: true });
 		return { outcome, stdoutText };
 	};
-	const runText = async (args: readonly string[]): Promise<string> => {
-		const { outcome, stdoutText } = await run(args);
+	const runText = async (args: readonly string[], deadline?: number): Promise<string> => {
+		const { outcome, stdoutText } = await run(args, deadline);
 		return outcome.ok ? stdoutText : "";
 	};
 
@@ -192,7 +204,7 @@ export async function startContainer(
 	}
 	runArgs.push(options.image, ...options.command);
 
-	const started = await run(runArgs);
+	const started = await run(runArgs, options.deadline.getTime());
 	if (!started.outcome.ok) {
 		return {
 			ok: false,
@@ -211,31 +223,32 @@ export async function startContainer(
 		labelValue: options.labelValue,
 		network: options.network,
 		publishedPorts: [...(options.publish ?? [])],
-		captureLogs: () => captureLogs(id, options),
+		captureLogs: (deadline) => captureLogs(id, options, deadline),
 	// Stopping with SIGTERM is the orderly path, but this Podman's rootless
 	// netns teardown fails with "permission denied" after a stop on a custom
 	// network, so the graceful span is signalled as SIGTERM by hand and the
 	// removal uses the force path that survives the failed cleanup.
-	stop: async (graceSeconds: number) => {
-		await run(["kill", "--signal", "TERM", id]);
+	stop: async (graceSeconds: number, deadline?: number) => {
+		const signalled = await run(["kill", "--signal", "TERM", id], deadline);
+		if (!signalled.outcome.ok && signalled.outcome.reason === "deadline") return signalled.outcome;
 		const graceMs = graceSeconds * 1000;
-		const graceDeadline = Date.now() + graceMs;
+		const graceDeadline = Math.min(Date.now() + graceMs, deadline ?? Infinity);
 		while (Date.now() < graceDeadline) {
-			if ((await runText(["container", "inspect", "-f", "{{.State.Running}}", id])) === "false") {
-				const done = await run(["container", "inspect", "-f", "{{.State.Running}}", id]);
+			if ((await runText(["container", "inspect", "-f", "{{.State.Running}}", id], deadline)).trim() === "false") {
+				const done = await run(["container", "inspect", "-f", "{{.State.Running}}", id], deadline);
 				return done.outcome;
 			}
 			await Bun.sleep(Math.min(200, Math.max(1, graceDeadline - Date.now())));
 		}
-		return (await run(["kill", "--signal", "KILL", id])).outcome;
+		return (await run(["kill", "--signal", "KILL", id], deadline)).outcome;
 	},
-	remove: async () => (await run(["rm", "-f", "-t", "0", id])).outcome,
+	remove: async (deadline) => (await run(["rm", "-f", "-t", "0", id], deadline)).outcome,
 	};
 
 	const intervalMs = options.probeIntervalSeconds * 1000;
 	const deadlineMs = options.deadline.getTime();
-	while (true) {
-		if (await options.probe(id)) {
+	while (Date.now() < deadlineMs) {
+		if (await options.probe(id, deadlineMs) && Date.now() < deadlineMs) {
 			return handle;
 		}
 		const remainingMs = deadlineMs - Date.now();
@@ -247,14 +260,20 @@ export async function startContainer(
 
 	// The deadline passed: stop the container with grace, keep its captured
 	// log, remove it, and refuse as NEVER_BECAME_READY naming that log.
-	await handle.stop(options.stopGraceSeconds);
-	const logs = await captureLogs(id, options);
-	await handle.remove();
+	const cleanupDeadline = () => Date.now() + options.cleanupTimeoutSeconds * 1000;
+	const stopped = await handle.stop(options.stopGraceSeconds, cleanupDeadline());
+	const logs = await captureLogs(id, options, cleanupDeadline());
+	const removed = await handle.remove(cleanupDeadline());
+	const cleanupFailures = [
+		...(stopped.ok ? [] : [`stop: ${stopped.message}`]),
+		...(removed.ok ? [] : [`removal: ${removed.message}`]),
+	];
+	const cleanupEvidence = cleanupFailures.length ? `; cleanup: ${cleanupFailures.join("; ")}` : "";
 	if (!logs.ok) {
 		return {
 			ok: false,
 			reason: "NEVER_BECAME_READY",
-			message: `The container ${id} did not become ready by the deadline ${options.deadline.toISOString()} and its log could not be captured: ${logs.message}`,
+			message: `The container ${id} did not become ready by the deadline ${options.deadline.toISOString()} and its log could not be captured: ${logs.message}${cleanupEvidence}`,
 			logPath: "",
 			logTail: "",
 		};
@@ -263,7 +282,7 @@ export async function startContainer(
 	return {
 		ok: false,
 		reason: "NEVER_BECAME_READY",
-		message: `The container ${id} did not become ready by the deadline ${options.deadline.toISOString()}; the captured log at "${logs.logPath}" holds what it printed: ${JSON.stringify(logText)}`,
+		message: `The container ${id} did not become ready by the deadline ${options.deadline.toISOString()}; the captured log at "${logs.logPath}" holds what it printed: ${JSON.stringify(logText)}${cleanupEvidence}`,
 		logPath: logs.logPath,
 		logTail: logText,
 	};
@@ -279,6 +298,7 @@ export type LeakCheck =
 	  };
 
 export type LeakCheckOptions = {
+	readonly deadline?: number;
 	readonly labelKey: string;
 	readonly labelValue: string;
 	readonly captureLimitBytes: number;
@@ -286,15 +306,15 @@ export type LeakCheckOptions = {
 	readonly executable?: string;
 };
 
-// Lists containers by the harness label and asserts nothing remains, so the
-// check can only ever fail on this harness's own labelled work and never on
-// anything else on the host. Networks are not listed: each run's network is
-// created and removed through the same handle that owns the run.
+// Checks both kinds of labelled resource. A failed network removal must not
+// become a clean result merely because all containers were removed.
 export async function checkForLeaks(options: LeakCheckOptions): Promise<LeakCheck> {
 	const label = `${options.labelKey}=${options.labelValue}`;
 	const listing = await runPodman(
 		["ps", "-a", "--no-trunc", "--filter", `label=${label}`, "--format", "{{.ID}}"],
 		{
+			...(options.deadline === undefined ? {} : { deadline: options.deadline }),
+			requireCompleteCapture: true,
 			captureLimitBytes: options.captureLimitBytes,
 			captureDirectory: await freshCaptureDirectory(options.captureDirectory),
 			...(options.executable !== undefined ? { executable: options.executable } : {}),
@@ -312,14 +332,34 @@ export async function checkForLeaks(options: LeakCheckOptions): Promise<LeakChec
 		.split("\n")
 		.map((line) => line.trim())
 		.filter((line) => line.length > 0);
-	if (containerIds.length === 0) {
+	const networkListing = await runPodman(
+		["network", "ls", "--filter", `label=${label}`, "--format", "{{.Name}}"],
+		{
+			...(options.deadline === undefined ? {} : { deadline: options.deadline }),
+			requireCompleteCapture: true,
+			captureLimitBytes: options.captureLimitBytes,
+			captureDirectory: await freshCaptureDirectory(options.captureDirectory),
+			...(options.executable !== undefined ? { executable: options.executable } : {}),
+		},
+	);
+	if (!networkListing.ok) {
+		return {
+			ok: false,
+			message: `The leak check could not list networks labelled ${label}: ${networkListing.message}`,
+			containers: containerIds,
+			networks: [],
+		};
+	}
+	const networks = (await readFile(networkListing.stdoutPath, "utf8"))
+		.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
+	if (containerIds.length === 0 && networks.length === 0) {
 		return { ok: true };
 	}
 	return {
 		ok: false,
-		message: `The leak check found labelled containers left behind: ${JSON.stringify(containerIds)} carrying the label ${label}.`,
+		message: `The leak check found labelled resources left behind: containers ${JSON.stringify(containerIds)}, networks ${JSON.stringify(networks)} carrying the label ${label}.`,
 		containers: containerIds,
-		networks: [],
+		networks,
 	};
 }
 

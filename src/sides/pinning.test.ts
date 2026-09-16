@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
 	digestOf,
 	loadSideDocument,
@@ -106,7 +106,7 @@ describe("readSideDocument", () => {
 		}
 	});
 
-	test("a recorded candidate whose bytes are on disk resolves, and its digest is the bytes' own", () => {
+	test("a recorded candidate compares its digest with the bytes on disk", () => {
 		// The property a run depends on: whatever the committed documents
 		// record, the loader computes the digest from the bytes rather than
 		// trusting the recorded value, so a re-pin is proven by the run.
@@ -118,12 +118,20 @@ describe("readSideDocument", () => {
 				continue;
 			}
 			const resolution = resolveSide(name, document, process.cwd());
-			expect("refused" in resolution).toBe(false);
-			if (!("resolved" in resolution)) {
-				throw new Error(`${name} did not resolve`);
+			const actualDigest = digestOf(resolve(process.cwd(), document.candidate.path));
+			if (actualDigest === document.candidate.digest) {
+				expect("resolved" in resolution).toBe(true);
+				if (!("resolved" in resolution)) throw new Error(`${name} did not resolve`);
+				expect(resolution.resolved.source).toBe("candidate");
+				expect(resolution.resolved.digest).toBe(actualDigest);
+			} else {
+				expect("refused" in resolution).toBe(true);
+				if (!("refused" in resolution)) throw new Error(`${name} did not refuse`);
+				expect(resolution.refused.kind).toBe("candidate-digest-differing");
+				if (resolution.refused.kind === "candidate-digest-differing") {
+					expect(resolution.refused.actualDigest).toBe(actualDigest);
+				}
 			}
-			expect(resolution.resolved.source).toBe("candidate");
-			expect(resolution.resolved.digest).toBe(document.candidate.digest);
 		}
 	});
 

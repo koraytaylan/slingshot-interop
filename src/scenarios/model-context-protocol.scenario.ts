@@ -19,6 +19,8 @@
 // what the server wrote back.
 
 import { agentAuthorization, invoke, machineArguments, runner, waitTerminal } from "./support.ts";
+import { verifyCreatedFolder } from "./created-folder.ts";
+import { refuseHttpResponse } from "../harness/http-refusal.ts";
 import type { StartClientRunnerOptions } from "../sides/client-runtime.ts";
 import type { ContainerHandle } from "../harness/container.ts";
 
@@ -60,8 +62,8 @@ export function requestLines(requests: readonly ProtocolRequest[]): string {
 
 export type AnsweredDocument = {
 	readonly id: unknown;
-	readonly result?: Record<string, unknown>;
-	readonly error?: { readonly code?: number; readonly message?: string };
+	readonly result?: unknown;
+	readonly error?: unknown;
 };
 
 // Reads the answer documents out of what the server wrote. A line the server
@@ -83,6 +85,9 @@ export function answeredDocuments(stdout: string): readonly AnsweredDocument[] {
 		}
 		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
 			throw new Error(`the protocol server wrote a line that is not a JSON object: ${trimmed.slice(0, 400)}`);
+		}
+		if ((parsed as Record<string, unknown>)["jsonrpc"] !== "2.0") {
+			throw new Error(`the protocol server did not declare JSON-RPC revision 2.0: ${trimmed.slice(0, 400)}`);
 		}
 		documents.push(parsed as AnsweredDocument);
 	}
@@ -112,7 +117,10 @@ export function resultOf(document: AnsweredDocument): Record<string, unknown> {
 	if (document.result === undefined) {
 		throw new Error(`the answer carried neither a result nor an error: ${JSON.stringify(document).slice(0, 800)}`);
 	}
-	return document.result;
+	if (document.result === null || typeof document.result !== "object" || Array.isArray(document.result)) {
+		throw new Error(`the answer's result is not an object: ${JSON.stringify(document).slice(0, 800)}`);
+	}
+	return document.result as Record<string, unknown>;
 }
 
 // The catalog's tools, as a consumer reads them: every entry must carry both a
@@ -130,6 +138,7 @@ export function catalogOf(result: Record<string, unknown>): readonly CataloguedT
 	if (tools.length === 0) {
 		throw new Error("tools/list answered an empty catalog, which a consumer can do nothing with");
 	}
+	const names = new Set<string>();
 	return tools.map((entry, position) => {
 		if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
 			throw new Error(`tool ${position} is not an object: ${JSON.stringify(entry).slice(0, 400)}`);
@@ -139,6 +148,10 @@ export function catalogOf(result: Record<string, unknown>): readonly CataloguedT
 		if (typeof name !== "string" || name.length === 0) {
 			throw new Error(`tool ${position} carries no name: ${JSON.stringify(entry).slice(0, 400)}`);
 		}
+		if (names.has(name)) {
+			throw new Error(`tools/list answered duplicate tool ${JSON.stringify(name)}`);
+		}
+		names.add(name);
 		const schema = held["inputSchema"];
 		if (schema === null || typeof schema !== "object" || Array.isArray(schema)) {
 			throw new Error(`tool ${JSON.stringify(name)} carries no input schema: ${JSON.stringify(entry).slice(0, 400)}`);
@@ -384,7 +397,7 @@ export const commandedToolName = "create_asset_folder";
 // call is answered with a receipt rather than a JSON-RPC error, the operation
 // it names reaches a terminal disposition through the client's own leaf, and
 // the folder the call declared exists on the agent with the title it declared.
-async function commandCall(
+export async function commandCall(
 	handle: ContainerHandle,
 	options: StartClientRunnerOptions,
 	machine: readonly string[],
@@ -399,7 +412,7 @@ async function commandCall(
 		signal: AbortSignal.timeout(30_000),
 	});
 	if (!planted.ok) {
-		return { ok: false, message: `the call's parent could not be planted: ${planted.status} ${await planted.text()}` };
+		return refuseHttpResponse(planted, "the call's parent could not be planted");
 	}
 	// The catalog is read again in the same exchange, so the call is only made
 	// for a tool this server advertises: a call for one it does not would be
@@ -472,23 +485,24 @@ async function commandCall(
 	if (!ended.ok) {
 		return { ok: false, message: `the ${commandedToolName} operation the call produced: ${ended.message}` };
 	}
-	if (ended.envelope.outcome === "operation_terminal_error" || ended.envelope.outcome === "operation_recovery_required") {
+	if (ended.envelope.outcome !== "operation_result") {
 		return { ok: false, message: `the ${commandedToolName} call the protocol server made ended as ${JSON.stringify(ended.envelope)}` };
+	}
+	const result = ended.envelope.result;
+	if (result === null || typeof result !== "object" || Array.isArray(result)
+		|| (result as Record<string, unknown>)["repository_path"] !== `${parent}/${folderName}`) {
+		return { ok: false, message: `the ${commandedToolName} result does not name the requested folder` };
 	}
 	// And it reached the agent: the folder the call declared answers on the
 	// agent's own route with the title the call declared. A call that never
 	// left the daemon could not have made one.
 	const made = await fetch(`http://127.0.0.1:${options.values.ports.author}${parent}/${folderName}.json`, {
 		headers: { authorization: agentAuthorization("admin", "admin") },
+		redirect: "error",
 		signal: AbortSignal.timeout(10_000),
 	});
-	if (!made.ok) {
-		return { ok: false, message: `the folder the ${commandedToolName} call declared does not answer on the agent: ${made.status} ${await made.text()}` };
-	}
-	const document = (await made.json()) as Record<string, unknown>;
-	if (document["jcr:title"] !== title) {
-		return { ok: false, message: `the folder the ${commandedToolName} call declared carries the title ${JSON.stringify(document["jcr:title"])} where the call declared ${JSON.stringify(title)}: ${JSON.stringify(document).slice(0, 400)}` };
-	}
+	const verified = await verifyCreatedFolder(made, title, options.values.capture.maximumBytes);
+	if (!verified.ok) return { ok: false, message: verified.message };
 	return { ok: true, effect: `${parent}/${folderName}`, operationIdentifier };
 }
 
@@ -540,6 +554,26 @@ export const controlsNeedingPriorWork = [
 	"operation-artifact",
 	"maintenance-apply",
 ] as const;
+
+// Independently expected control vocabulary, from the client's schema_projection.rs.
+// New controls must receive an explicit expectation before they count as exercised.
+const controlAnswerTags: Readonly<Record<string, readonly string[]>> = {
+	"operation-list": ["operation_list_page"],
+	"operation-status": ["operation_status", "operation_recovery_required"],
+	"operation-wait": ["operation_status", "operation_result", "operation_terminal_error"],
+	"operation-result": ["operation_result", "structured_result_artifact_access"],
+	"maintenance-preview": ["maintenance_preview"],
+};
+
+export function assertControlAnswer(toolName: string, result: Record<string, unknown>): void {
+	const content = result["content"];
+	const carried = Array.isArray(content) ? contentOf(content) : undefined;
+	const outcome = carried?.["outcome"];
+	const expected = Object.hasOwn(controlAnswerTags, toolName) ? controlAnswerTags[toolName] : undefined;
+	if (typeof outcome !== "string" || expected === undefined || !expected.includes(outcome)) {
+		throw new Error(`expected a declared control outcome, received ${JSON.stringify(outcome)}`);
+	}
+}
 
 // Every read-only tool the catalog advertises, called with the arguments its own
 // schema declares, against the run's live daemon.
@@ -640,7 +674,7 @@ export async function sweepCatalog(
 	// this process writes when its own checks stopped the call before anything
 	// was sent. That distinction is the whole assertion, so it is read off the
 	// answer's own tag rather than inferred from anything else.
-	const refusedLocally: string[] = [];
+	const invalidAnswers: string[] = [];
 	const answeredNames: string[] = [];
 	for (const [position, tool] of swept.entries()) {
 		let result: Record<string, unknown>;
@@ -649,18 +683,18 @@ export async function sweepCatalog(
 		} catch (error) {
 			return { ok: false, message: `${tool.name} was refused by the protocol: ${error instanceof Error ? error.message : String(error)}` };
 		}
-		const content = result["content"];
-		const carried = Array.isArray(content) ? contentOf(content) : undefined;
-		if (carried !== undefined && carried["outcome"] === "local_application_error") {
-			refusedLocally.push(tool.name);
+		try {
+			assertControlAnswer(tool.name, result);
+		} catch (error) {
+			invalidAnswers.push(`${tool.name}: ${error instanceof Error ? error.message : String(error)}`);
 			continue;
 		}
 		answeredNames.push(tool.name);
 	}
-	if (refusedLocally.length > 0) {
+	if (invalidAnswers.length > 0) {
 		return {
 			ok: false,
-			message: `${refusedLocally.length} of the ${swept.length} read-only tools in the catalog were answered with a local failure and never reached the daemon: ${refusedLocally.join(", ")}; the daemon said: ${answered.stderr.trim().slice(0, 1200)}`,
+			message: `${invalidAnswers.length} of the ${swept.length} read-only controls returned missing, malformed or unexpected outcomes: ${invalidAnswers.join(", ")}; stderr: ${answered.stderr.trim().slice(0, 1200)}`,
 		};
 	}
 	return { ok: true, answered: answeredNames, notDriven: [...controlsNeedingPriorWork] };
