@@ -11,7 +11,7 @@
 import { chmod } from "node:fs/promises";
 import { readBoundedJson } from "../harness/bounded-json.ts";
 import { refuseHttpResponse } from "../harness/http-refusal.ts";
-import { agentAuthorization, agentSnapshot, envelope, invoke, machineArguments, resolveAgentOperationIdentifier, runner, waitTerminal } from "./support.ts";
+import { agentAuthorization, agentSnapshot, envelope, invoke, machineArguments, resolveAgentOperationIdentifier, runner, waitTerminal, type WaitOutcome } from "./support.ts";
 import { severanceControlPort } from "../run/orchestration.ts";
 import { submissionRequestLine, withProxyDisarmed } from "./proxy-observation.ts";
 export { submissionRequestLine, withProxyDisarmed } from "./proxy-observation.ts";
@@ -162,7 +162,7 @@ export const scenario = {
 				if (resumeReceipt.outcome !== "operation_resume_receipt" || resumeReceipt.category !== parked.envelope.category || (resumeReceipt as Record<string, unknown>)["replayed"] !== false) {
 					return { ok: false, message: `recovery restart did not acknowledge the first guarded resume: ${JSON.stringify(resumeReceipt)}` };
 				}
-				const waited = await waitTerminal(handle, machine, operationIdentifier, options, options.values.readiness.harnessSeconds * 1000);
+				const waited = await waitForRecoveredResult(handle, machine, operationIdentifier, options);
 				if (!waited.ok) return waited;
 				recovered = waited;
 				recoveryMode = "guarded resume";
@@ -209,6 +209,21 @@ export const scenario = {
 		}, disarm);
 	},
 };
+
+// A resume acknowledgement only makes the durable row eligible; the scheduler
+// may not have claimed it by the next operation-wait response. Keep polling
+// through that transitional recovery envelope until the resumed result is
+// observable, while still surfacing terminal errors and deadline failures.
+async function waitForRecoveredResult(handle: ContainerHandle, machine: readonly string[], operationIdentifier: string, options: StartClientRunnerOptions): Promise<WaitOutcome> {
+	const deadline = Date.now() + options.values.readiness.harnessSeconds * 1000;
+	while (Date.now() < deadline) {
+		const waited = await waitTerminal(handle, machine, operationIdentifier, options, Math.max(1, deadline - Date.now()));
+		if (!waited.ok) return waited;
+		if (waited.envelope.outcome !== "operation_recovery_required") return waited;
+		await Bun.sleep(Math.min(options.values.readiness.pollIntervalSeconds * 1000, Math.max(1, deadline - Date.now())));
+	}
+	return { ok: false, message: `the resumed operation did not reach a result by the scenario's deadline: ${operationIdentifier}` };
+}
 
 type ScenarioAnswer = { readonly ok: boolean; readonly message: string };
 
