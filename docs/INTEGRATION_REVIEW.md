@@ -3302,6 +3302,11 @@ that the supplied binaries were built from those commits.
   `38ede8b122dafc38ec321d79a33321bab410ce08` is committed and its rebuilt
   candidate SHA-256 is
   `ee830b9679e39e1151a335a6e0934ea1cb77efec8cf9fece3a63e881e0788be3`.
+- Naming platform-trust size multipliers removed four more source-policy
+  findings; the gate now reports 293 remaining violations. Client commit
+  `20a3467f3599fd78fc4c10a9ea7c1e6340a54969` is committed and its rebuilt
+  candidate SHA-256 is
+  `251ee4be6e7d9975a275c7f776642cf3ad2d0c67652a3df6fe8de88e17eb6c19`.
 - Naming the lock permission modes removed two more numeric-literal findings;
   the source-policy gate now reports 297 remaining violations. Client commit
   `af5962a6e33f7612ecf045fd9dab8a30cc4037f5` is committed and its exact
