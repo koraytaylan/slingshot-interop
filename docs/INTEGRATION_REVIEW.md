@@ -2838,6 +2838,16 @@ that the supplied binaries were built from those commits.
    with SHA-256
    `df4f7ac130c39a17df410ccbb5673b83191c37e1515c4af6f80ca3fe7d1c9e5b`.
 
+149. **Bounding derived lock names repaired artifact transfer in the live run.**
+   The client now hashes an overlong staging stem while retaining all source
+   identity in the digest, keeping each lock filename below the filesystem
+   component ceiling. Boundary tests pass and client commit `30134fc` produces
+   candidate archive SHA-256
+   `3008004b6be25d659c9f7405a6e8e8d2736e752410452d085648bdbb0ab80764`.
+   The full exact-candidate orchestration then passes artifact transfer and six
+   of eight scenarios; authentication refusal and severed recovery remain
+   failing as recorded in `/tmp/interop-candidates-after-lock-fix.log`.
+
 147. **Exact-commit orchestration exposed deeper sibling incompatibilities after parser repair.**
    With `transition_revision` admitted as validated agent metadata, the temporary
    candidate run reached all eight scenarios. Five passed; artifact transfer
