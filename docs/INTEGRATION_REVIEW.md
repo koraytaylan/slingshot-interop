@@ -3345,3 +3345,9 @@ that the supplied binaries were built from those commits.
   Maven reactor build and all PMD/SpotBugs checks passed with zero reported
   bug instances. The client's source-policy gate remains the outstanding code
   quality failure at 292 findings; this review did not weaken that policy.
+- A fresh client source-policy run confirms the 292 findings are 273 unnamed
+  numeric values (267 in `slingshot-daemon` tests), 9 branch-complexity
+  findings, 4 file-length findings, and 4 intentional unsafe blocks covered by
+  2 existing suppression markers. No new integration defect is hidden in that
+  count; the remaining work is client repository quality debt, not a harness
+  bypass.
