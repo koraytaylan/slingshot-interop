@@ -39,16 +39,16 @@ digest = ""
 # Reason: the candidate bundle under the supplied-inputs directory, built in
 # this side's own verified environment and placed by its holder; empty until
 # a holder supplies candidate bytes.
-path = "/home/koraytaylan/Workspace/slingshot/slingshot-agent/core/target/slingshot-agent-core-0.0.0.jar"
+path = "/tmp/interop-candidate-reviewed/slingshot-agent-core-0.0.0.jar"
 
 # Reason: the digest of the candidate bytes as the holder built them, so a
 # run proves the bytes on disk are the bytes the holder acknowledged; empty
 # until a holder supplies candidate bytes.
-digest = "a33be224cc01127df4f17b873de296ee83dc8339aaba978b67649d5c65c806f9"
+digest = "cc4af8739fef393f839cf8edf089250bd002a89340b26b03de890adb7ae074a2"
 
 # Reason: the exact commit the candidate was built from, so every result
 # names the source it was about; empty until a holder supplies a candidate.
-commit = "993dd6550b7f5f67b27719026009c67b4b24e1e9"
+commit = "6ef67e005696d766b4aa43b1372ab1324922c00d"
 
 # Reason: the holder's acknowledgement that these candidate bytes were built
 # in the sibling's own verified environment; only the holder sets it, and a

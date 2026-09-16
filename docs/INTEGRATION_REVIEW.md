@@ -3325,3 +3325,15 @@ that the supplied binaries were built from those commits.
   clean teardown. The client archive SHA-256 was
   `ee830b9679e39e1151a335a6e0934ea1cb77efec8cf9fece3a63e881e0788be3` and the
   acknowledged agent archive remained unchanged.
+- Review handoff candidates are now pinned to the latest committed sibling
+  changes: client `fba262b764c61500539109b408308f7dbb8f6d01` with archive
+  SHA-256 `e28230df4b1dbd2f29733fdfd8a73a0ff6e8041749779658dbb854f5da2d6d4e`,
+  and agent `6ef67e005696d766b4aa43b1372ab1324922c00d` with archive SHA-256
+  `cc4af8739fef393f839cf8edf089250bd002a89340b26b03de890adb7ae074a2`.
+  `support/slingshot-side.toml` and `support/agent-side.toml` record these
+  exact paths, digests, commits, and `acknowledged = true`. Harness commit
+  `16639691642d9f9f41048172bd6a6269c9a80996` also makes the real-socket echo
+  fixture's teardown idempotent. TypeScript compilation passes; the focused
+  startup-deadline tests pass 10/10. The broad Bun suite is resource-sensitive
+  when all socket/Podman tests run concurrently in this environment and should
+  be rerun with the host's normal networking/Podman capacity before release.
