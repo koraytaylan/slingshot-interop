@@ -3337,3 +3337,7 @@ that the supplied binaries were built from those commits.
   startup-deadline tests pass 10/10. The broad Bun suite is resource-sensitive
   when all socket/Podman tests run concurrently in this environment and should
   be rerun with the host's normal networking/Podman capacity before release.
+- Full isolated Bun verification was rerun to completion with host networking
+  and Podman access: 439 tests passed, 0 failed, 689,021 assertions across 55
+  files in 121.78 seconds. TypeScript compilation also passes. The earlier
+  apparent stall was command-observation truncation, not a test failure.
