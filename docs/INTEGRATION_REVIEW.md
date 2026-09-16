@@ -3302,3 +3302,8 @@ that the supplied binaries were built from those commits.
   `38ede8b122dafc38ec321d79a33321bab410ce08` is committed and its rebuilt
   candidate SHA-256 is
   `ee830b9679e39e1151a335a6e0934ea1cb77efec8cf9fece3a63e881e0788be3`.
+- Final exact-candidate rerun after the comparator cleanup (client commit
+  `38ede8b122dafc38ec321d79a33321bab410ce08`) passed all 8/8 scenarios with
+  clean teardown. The client archive SHA-256 was
+  `ee830b9679e39e1151a335a6e0934ea1cb77efec8cf9fece3a63e881e0788be3` and the
+  acknowledged agent archive remained unchanged.
