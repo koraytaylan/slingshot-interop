@@ -3250,3 +3250,16 @@ that the supplied binaries were built from those commits.
   suite (10 tests, 234.54s), and capability probes. This verifies the current
   transport worktree more broadly, but does not clear the client-wide policy
   gate or replace real sibling integration.
+- Review-loop candidate rerun used the owner-reviewable commits `30134fc`
+  (client) and `6ef67e0` (agent), with acknowledged candidate archives
+  `slingshot-x86_64-unknown-linux-gnu.tar.gz` (SHA-256
+  `3008004b6be25d659c9f7405a6e8e8d2736e752410452d085648bdbb0ab80764`) and
+  `slingshot-agent-core-0.0.0.jar` (SHA-256
+  `cc4af8739fef393f839cf8edf089250bd002a89340b26b03de890adb7ae074a2`).
+  After rebuilding the proxy from the repaired source (repository digest
+  `sha256:8de038b0a46830463d0effeb8c7d49a23bde20c6bdacc1391952e568bcc212a5`),
+  the live eight-scenario matrix passed 7/8: artifact transfer,
+  authentication refusal, detached operation, failure category, high-water,
+  MCP, and write/read passed. Severed submission remains a genuine integration
+  failure: its first guarded resume returned `operation_resume_receipt` with
+  `category=queued`, `replayed=false`, rather than acknowledging the resume.
