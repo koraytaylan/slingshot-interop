@@ -22,6 +22,7 @@ import {
 import type { Values } from "../harness/values.ts";
 import { phases, type PhaseReporter } from "../run/progress.ts";
 import { AUTHOR_RUNTIME_NAME } from "./client-configuration.ts";
+import { PLANTED_FORGERY_TOKEN, TOKEN_ROUTE } from "../harness/forgery-protection.ts";
 
 // The image the preparation command built and recorded, verified offline by
 // support/interop-images.toml. The caller passes the verified identifier.
@@ -159,20 +160,12 @@ async function installStateConfiguration(
 // The token route an Adobe author serves and a plain Sling starter does not.
 // Adobe documents that an authenticated author POST carries a short-lived
 // token fetched immediately beforehand from this route, and the client fetches
-// and sends one before every submission — it refuses to send a state-changing
-// request without it. The pinned starter carries neither the filter that issues
-// the token nor the filter that would validate it (docs/DEPLOYMENT.md in the
-// agent repository records both absences), so the harness supplies the route
-// the way it supplies the state configuration: the platform prerequisite the
-// pinned bytes do not carry, planted through the platform's own POST servlet
-// and named here rather than discovered as an unexplained refusal.
-const tokenRoute = "/libs/granite/csrf/token.json";
-
-// The token the planted route answers with. Nothing validates it here, because
-// the filter that would is the one the starter does not carry; the client's own
-// check is that the document names a non-empty value that is a usable header,
-// which is what the route is for.
-const plantedToken = "slingshot-interop-token";
+// and sends one before every submission. The pinned starter carries neither the
+// filter that issues the token nor the filter that would validate it
+// (docs/DEPLOYMENT.md in the agent repository records both absences), so the
+// harness plants the route here and the severance proxy requires the planted
+// token plus a Referer on state-changing agent POSTs.
+const tokenRoute = TOKEN_ROUTE;
 
 async function installForgeryToken(
 	port: number,
@@ -211,7 +204,7 @@ async function installForgeryToken(
 			"jcr:primaryType": "nt:file",
 			"jcr:content/jcr:primaryType": "nt:resource",
 			"jcr:content/jcr:mimeType": "application/json",
-			"jcr:content/jcr:data": JSON.stringify({ token: plantedToken }),
+			"jcr:content/jcr:data": JSON.stringify({ token: PLANTED_FORGERY_TOKEN }),
 		}),
 	});
 	if (planted.status >= 400 && planted.status !== 409) {

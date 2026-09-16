@@ -18,5 +18,6 @@ COPY .tooling/bun-linux-x64/bun /usr/local/bin/bun
 # directly and no mount of harness internals is needed at run time.
 COPY src/harness/severance-proxy.ts /opt/severance-proxy/severance-proxy.ts
 COPY src/harness/http-response-status.ts /opt/severance-proxy/http-response-status.ts
+COPY src/harness/forgery-protection.ts /opt/severance-proxy/forgery-protection.ts
 
 ENTRYPOINT ["/usr/local/bin/bun", "/opt/severance-proxy/severance-proxy.ts"]
