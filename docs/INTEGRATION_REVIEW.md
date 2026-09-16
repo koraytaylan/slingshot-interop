@@ -3271,6 +3271,12 @@ that the supplied binaries were built from those commits.
   from commit `a52398526c3d46f91458085d31304bf9bb878373` and
   has SHA-256
   `f0d3dbfabbcbf76962a0fefc792acbffe19690ccc3669ddc4bd0ca2fae6021ae`.
+- Final exact-candidate rerun (client commit
+  `a52398526c3d46f91458085d31304bf9bb878373`, agent commit
+  `6ef67e005696d766b4aa43b1372ab1324922c00d`) passed all 8/8 scenarios and
+  completed teardown cleanly. This is the strongest current evidence that the
+  harness verifies the two sibling projects together across normal, refusal,
+  artifact, protocol, high-water, and severed/recovery paths.
 - Review-loop candidate rerun used the owner-reviewable commits `30134fc`
   (client) and `6ef67e0` (agent), with acknowledged candidate archives
   `slingshot-x86_64-unknown-linux-gnu.tar.gz` (SHA-256
