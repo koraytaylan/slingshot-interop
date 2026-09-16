@@ -2848,6 +2848,16 @@ that the supplied binaries were built from those commits.
    of eight scenarios; authentication refusal and severed recovery remain
    failing as recorded in `/tmp/interop-candidates-after-lock-fix.log`.
 
+150. **Authentication-refusal failure was narrowed to an unobserved submission request.**
+   An isolated run with proxy payload diagnostics showed `matchedRequests: 0`
+   and an empty `statusCounts` map for the armed exact HTTP/1.1 submission line
+   (`/tmp/interop-auth-diagnostic.log`). The scenario therefore cannot claim
+   that the wrong credential produced a 401-only POST exchange: no matching
+   submission request was witnessed. This remains open pending a protocol-level
+   determination of whether the client selected a different request form or
+   failed before sending; the observer was not relaxed to accept an unobserved
+   exchange.
+
 147. **Exact-commit orchestration exposed deeper sibling incompatibilities after parser repair.**
    With `transition_revision` admitted as validated agent metadata, the temporary
    candidate run reached all eight scenarios. Five passed; artifact transfer
