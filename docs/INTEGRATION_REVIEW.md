@@ -3297,3 +3297,8 @@ that the supplied binaries were built from those commits.
   clean teardown. The source-policy gate now reports 302 remaining findings;
   the cleanup removed five naming/documentation findings without changing
   policy semantics.
+- Comparator names in the large admission test were also spelled out. The
+  source-policy gate now reports 299 remaining violations. Client commit
+  `38ede8b122dafc38ec321d79a33321bab410ce08` is committed and its rebuilt
+  candidate SHA-256 is
+  `ee830b9679e39e1151a335a6e0934ea1cb77efec8cf9fece3a63e881e0788be3`.
