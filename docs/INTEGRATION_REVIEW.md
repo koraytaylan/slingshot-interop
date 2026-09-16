@@ -3250,6 +3250,18 @@ that the supplied binaries were built from those commits.
   suite (10 tests, 234.54s), and capability probes. This verifies the current
   transport worktree more broadly, but does not clear the client-wide policy
   gate or replace real sibling integration.
+- Follow-up repair loop: client commit `5c9cd00e360760083a4eb82dcba497b0b1fafc8e`
+  preserved the recovery category in resume receipts; commit
+  `ade19d1f618afa4f03b58d6426c631d796428f40` made resume atomically clear the
+  recovery hold, return the operation to `queued`, and clear stale scheduler
+  claims. Focused storage recovery tests passed 13/13. The rebuilt client
+  candidate is SHA-256
+  `bb361a27d290f2b3f361108201ed02b5491ec9ed07d37f6af0dae2839f4f859a`.
+  The isolated severed-submission scenario then passed, and the final full
+  eight-scenario matrix passed all 8/8 scenarios with the acknowledged client
+  and agent candidates. Scenario teardown encountered one rootless-Podman
+  network-process permission error after all eight scenarios passed; no
+  labelled containers remained on verification.
 - Review-loop candidate rerun used the owner-reviewable commits `30134fc`
   (client) and `6ef67e0` (agent), with acknowledged candidate archives
   `slingshot-x86_64-unknown-linux-gnu.tar.gz` (SHA-256
