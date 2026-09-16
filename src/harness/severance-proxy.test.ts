@@ -161,10 +161,14 @@ async function startEcho(): Promise<{ port: number; close: () => Promise<void> }
 			socket.write(chunk);
 		});
 	});
-	const close = () =>
-		new Promise<void>((resolve, reject) => {
+	let closed = false;
+	const close = () => {
+		if (closed) return Promise.resolve();
+		closed = true;
+		return new Promise<void>((resolve, reject) => {
 			server.close((error) => (error === undefined ? resolve() : reject(error)));
 		});
+	};
 	openResources.push({ close });
 	return new Promise((resolve, reject) => {
 		server.listen(anyPort, loopback, () => {
