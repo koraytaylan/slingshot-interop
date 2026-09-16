@@ -4,7 +4,7 @@
 import { runCleanup } from "../run/cleanup.ts";
 
 export const submissionRequestLine = "POST /bin/slingshot/agent/submit HTTP/1.1";
-export const tokenRequestLine = "GET /libs/granite/csrf/token.json HTTP/1.1";
+export const authenticationRequestLine = "GET /bin/slingshot/agent/capabilities HTTP/1.1";
 type ScenarioAnswer = { readonly ok: boolean; readonly message: string };
 
 export async function withProxyDisarmed(run: () => Promise<ScenarioAnswer>, disarm: () => Promise<ScenarioAnswer>): Promise<ScenarioAnswer> {
