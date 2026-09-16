@@ -3262,6 +3262,15 @@ that the supplied binaries were built from those commits.
   and agent candidates. Scenario teardown encountered one rootless-Podman
   network-process permission error after all eight scenarios passed; no
   labelled containers remained on verification.
+- Post-integration policy audit: the recovery implementation was decomposed
+  so its new complexity finding is gone; the client source-policy count fell
+  from 308 to 307. The remaining 307 findings are repository-wide debt,
+  including the pre-existing 1017-line statement inventory, large test files,
+  existing unsafe/suppression markers, and documentation/naming findings; no
+  exemption or baseline was added. The latest exact client candidate is built
+  from commit `a52398526c3d46f91458085d31304bf9bb878373` and
+  has SHA-256
+  `f0d3dbfabbcbf76962a0fefc792acbffe19690ccc3669ddc4bd0ca2fae6021ae`.
 - Review-loop candidate rerun used the owner-reviewable commits `30134fc`
   (client) and `6ef67e0` (agent), with acknowledged candidate archives
   `slingshot-x86_64-unknown-linux-gnu.tar.gz` (SHA-256
