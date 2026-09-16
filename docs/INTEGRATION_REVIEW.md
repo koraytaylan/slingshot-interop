@@ -2866,6 +2866,14 @@ that the supplied binaries were built from those commits.
    candidate run still requires one final orchestration check after this parser
    repair; committed sibling pins remain unchanged.
 
+152. **The pinned proxy image predates the observer repair.**
+   Host-level proxy tests accept the dotted token route, but live orchestration
+   still uses the pinned `severance-proxy` image digest, whose embedded validator
+   returned 400 before the repaired source could run (`/tmp/interop-auth-final-check.log`).
+   This means the authentication scenario cannot yet be claimed green from the
+   current image; the image must be rebuilt and its digest reviewed before the
+   next candidate run. The pinned image was not silently retagged.
+
 147. **Exact-commit orchestration exposed deeper sibling incompatibilities after parser repair.**
    With `transition_revision` admitted as validated agent metadata, the temporary
    candidate run reached all eight scenarios. Five passed; artifact transfer
