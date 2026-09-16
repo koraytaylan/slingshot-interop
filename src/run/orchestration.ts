@@ -39,8 +39,12 @@ import {
 	type ContainerHandle,
 } from "../harness/container.ts";
 import { runPodman } from "../harness/podman.ts";
+import { refuseHttpResponse } from "../harness/http-refusal.ts";
 import { severancePoints } from "../harness/severance-proxy.ts";
 import { readdir } from "node:fs/promises";
+import { type ReportData, type ScenarioOutcome } from "./report.ts";
+import { runCleanup } from "./cleanup.ts";
+import { recoverRunContainers, recoverRunNetworks } from "../harness/recover-containers.ts";
 import {
 	elapsedSeconds,
 	silentProgress,
@@ -59,17 +63,19 @@ export function severanceControlPort(values: Values): number {
 // Disarms every severance point the proxy can hold, so the relay a scenario
 // shared is handed back the way it was lent: a point left armed would sever
 // the exchanges of every scenario that ran after the one that armed it.
-async function disarmSeveranceProxy(values: Values): Promise<{ readonly ok: true } | { readonly ok: false; readonly message: string }> {
+export async function disarmSeveranceProxy(values: Values): Promise<{ readonly ok: true } | { readonly ok: false; readonly message: string }> {
 	for (const point of severancePoints) {
 		let response: Response;
 		try {
-			response = await fetch(`http://127.0.0.1:${severanceControlPort(values)}/disarm/${point}`, { method: "POST", signal: AbortSignal.timeout(10_000) });
+			response = await fetch(`http://127.0.0.1:${severanceControlPort(values)}/disarm/${point}`, { method: "POST", signal: AbortSignal.timeout(10_000), redirect: "error" });
 		} catch (failure) {
 			return { ok: false, message: `the control listener did not answer: ${failure instanceof Error ? failure.message : String(failure)}` };
 		}
-		if (!response.ok) {
-			return { ok: false, message: `disarming ${point} answered ${response.status} ${await response.text()}` };
+		if (response.status !== 200 || response.redirected) {
+			return refuseHttpResponse(response, `disarming ${point} failed`);
 		}
+		try { await response.body?.cancel(); }
+		catch { return { ok: false, message: `disarming ${point} could not release its response body` }; }
 	}
 	return { ok: true };
 }
@@ -79,6 +85,7 @@ export type OrchestrationOutcome =
 	| {
 			readonly ok: true;
 			readonly report: string;
+			readonly data: ReportData;
 	  }
 	| {
 			readonly ok: false;
@@ -92,6 +99,7 @@ export type OrchestrationOutcome =
 			readonly ok: false;
 			readonly reason: "SETUP_FAILED";
 			readonly message: string;
+			readonly data?: ReportData;
 	  };
 
 export async function runInterop(
@@ -116,7 +124,7 @@ export async function runInterop(
 	},
 ): Promise<OrchestrationOutcome> {
 	const values = readValues(join(baseDirectory, "support/harness-values.toml"));
-	const labelValue = `run-${Date.now()}`;
+	const labelValue = `run-${crypto.randomUUID()}`;
 	const networkName = `net-${labelValue}`;
 	const report = options.progress ?? silentProgress;
 	report(`run ${labelValue}: resolving both sides`);
@@ -145,31 +153,54 @@ export async function runInterop(
 
 	const slingshot = slingshotRes.resolved;
 	const agent = agentRes.resolved;
+	const scenariosDir = join(baseDirectory, "src/scenarios");
+	let scenarioFiles: string[] = [];
+	const scenarioOutcomes: ScenarioOutcome[] = [];
+	const failures: string[] = [];
+	let agentConfiguration: ReportData["agentConfiguration"];
+	const data = (): ReportData => ({
+		label: labelValue, sides: { slingshot, agent },
+		images: Object.fromEntries(Object.entries(options.images).map(([name, image]) => [name, {
+			identifier: image.identifier, digest: image.identifier.split("@").at(-1)!,
+		}])),
+		scenarios: scenarioFiles.map((file) => scenarioOutcomes.find((outcome) => outcome.scenario === file)
+			?? { scenario: file, ok: false, reason: "NOT_RUN", message: "run stopped before this scenario: " + failures.join("; ") }),
+		...(failures.length ? { failures } : {}),
+		...(agentConfiguration ? { agentConfiguration } : {}),
+	});
 	report(
 		`slingshot ${slingshot.source === "released" ? `v${slingshot.version}` : "candidate"} from ${slingshot.path}`,
 	);
 	report(`agent ${agent.source === "released" ? `v${agent.version}` : "candidate"} from ${agent.path}`);
 
+	const handles: ContainerHandle[] = [];
+	let finalOutcome: OrchestrationOutcome;
+	let currentScenario: string | undefined;
+	let ownedWorkDirectory: string | undefined;
+	let networkCreated = false;
+	try {
+	// Discovery is setup too: preserve authenticated side identities and a
+	// run-level failure if the scenario inventory cannot be read.
+	scenarioFiles = (await readdir(scenariosDir)).filter((file) => file.endsWith(".scenario.ts")).sort();
 	// 2. Verify prepared images
 	report(`checking ${Object.keys(options.images).length} prepared images`);
 	for (const [name, { identifier }] of Object.entries(options.images)) {
 	const check = await runPodman(["image", "inspect", identifier], {
+		deadline: Date.now() + values.readiness.harnessSeconds * 1000,
 		captureLimitBytes: values.capture.maximumBytes,
 		...(options.executable !== undefined ? { executable: options.executable } : {}),
 	});
 		if (!check.ok) {
-			return {
-				ok: false,
-				reason: "SETUP_FAILED",
-				message: `Prepared image ${name} (${identifier}) is missing; run scripts/prepare_interop_images first.`,
-			};
+			throw new Error(`Prepared image ${name} (${identifier}) inspection failed: ${check.message}`);
 		}
 	}
 
 	// 3. Setup resources
 	report("creating the run's network");
 	const workDirectory = await mkdtemp(join(tmpdir(), "interop-work-"));
+	ownedWorkDirectory = workDirectory;
 	const network = await createNetwork(networkName, {
+		deadline: Date.now() + values.readiness.harnessSeconds * 1000,
 		labelKey: values.label.key,
 		labelValue,
 		captureLimitBytes: values.capture.maximumBytes,
@@ -177,23 +208,14 @@ export async function runInterop(
 	});
 
 	if (!network.ok) {
-		await rm(workDirectory, { recursive: true, force: true });
-		return {
-			ok: false,
-			reason: "SETUP_FAILED",
-			message: `Failed to create network: ${network.message}`,
-		};
+		throw new Error(`Failed to create network: ${network.message}`);
 	}
-
-	const handles: ContainerHandle[] = [];
-	const scenarioOutcomes: { file: string; ok: boolean; message?: string }[] = [];
-	let finalOutcome: OrchestrationOutcome;
-
-	try {
+	networkCreated = true;
 		// 4. Start author runtime
 		report(`starting the author runtime (${options.images["tier-sling"].identifier})`);
 		const authorStartedAt = Date.now();
 		const authorRuntime = await startSlingRuntime({
+			configurationObserved: inputs => { agentConfiguration = inputs; },
 			image: options.images["tier-sling"].identifier,
 			values,
 			network: network.name,
@@ -241,8 +263,9 @@ export async function runInterop(
 				`SEVERANCE_UPSTREAM_PORT=${values.ports.author}`,
 			],
 			command: [],
-			probe: async (id) => {
+			probe: async (id, deadline) => {
 				const logged = await runPodman(["logs", id], {
+					deadline,
 					captureLimitBytes: values.capture.maximumBytes,
 					captureDirectory: workDirectory,
 					...(options.executable !== undefined ? { executable: options.executable } : {}),
@@ -256,6 +279,7 @@ export async function runInterop(
 			probeIntervalSeconds: values.readiness.pollIntervalSeconds,
 			deadline: new Date(Date.now() + values.readiness.harnessSeconds * 1000),
 			stopGraceSeconds: values.stop.graceSeconds,
+			cleanupTimeoutSeconds: values.readiness.harnessSeconds,
 			captureLimitBytes: values.capture.maximumBytes,
 			captureDirectory: workDirectory,
 			...(options.executable !== undefined ? { executable: options.executable } : {}),
@@ -319,14 +343,13 @@ export async function runInterop(
 		report("client runner ready");
 
 		// 6. Discover and run scenarios
-		const scenariosDir = join(baseDirectory, "src/scenarios");
-		const files = await readdir(scenariosDir);
-		const scenarioFiles = files
-			.filter((f) => f !== "README.md" && f.endsWith(".scenario.ts"))
-			.sort();
+		if (scenarioFiles.length === 0) {
+			throw new Error("No integration scenarios were discovered");
+		}
 		report(`running ${scenarioFiles.length} scenarios, in this order: ${scenarioFiles.join(", ")}`);
 
 		for (const [position, file] of scenarioFiles.entries()) {
+			currentScenario = file;
 			const scenarioModule = await import(join(scenariosDir, file));
 			const scenario = scenarioModule.scenario;
 			if (!scenario) {
@@ -356,7 +379,8 @@ export async function runInterop(
 				},
 			);
 
-			scenarioOutcomes.push({ file, ok: outcome.ok, message: outcome.message });
+			scenarioOutcomes.push({ scenario: file, ok: outcome.ok, ...(outcome.message !== undefined ? { message: outcome.message } : {}) });
+			currentScenario = undefined;
 			report(
 				`[${position + 1}/${scenarioFiles.length}] ${file}: ${outcome.ok ? "ok" : "failed"} after ${elapsedSeconds(scenarioStartedAt)}s`,
 			);
@@ -382,18 +406,22 @@ export async function runInterop(
 			`Slingshot side: ${slingshot.name} v${slingshot.source === "released" ? slingshot.version : "candidate"} (${slingshot.path}) digest:${slingshot.digest}`,
 			`Agent side: ${agent.name} v${agent.source === "released" ? agent.version : "candidate"} (${agent.path}) digest:${agent.digest}`,
 			`Scenarios:`,
-			...scenarioOutcomes.map((s) => `  - ${s.file}: ${s.ok ? "ok" : `failed (${s.message})`}`),
+			...scenarioOutcomes.map((s) => `  - ${s.scenario}: ${s.ok ? "ok" : `failed (${s.message})`}`),
 		];
 
 		finalOutcome = {
 			ok: true,
 			report: reportLines.join("\n"),
+			data: data(),
 		};
 	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		failures.push(message);
+		if (currentScenario !== undefined) scenarioOutcomes.push({ scenario: currentScenario, ok: false, reason: "SCENARIO_EXCEPTION", message });
 		finalOutcome = {
 			ok: false,
 			reason: "SETUP_FAILED",
-			message: error instanceof Error ? error.message : String(error),
+			message,
 		};
 		report(`the run stopped: ${finalOutcome.message}`);
 	}
@@ -401,38 +429,49 @@ export async function runInterop(
 	// 7. Teardown
 	report(`stopping ${handles.length} containers and removing the run's network`);
 	const teardownStartedAt = Date.now();
-	for (const [position, handle] of handles.entries()) {
-		// Each container gets its own line: stopping waits out a grace period,
-		// so a numbered line is the difference between a teardown a reader can
-		// watch and a stall they cannot tell from a hang.
-		report(`[${position + 1}/${handles.length}] stopping ${handle.id.slice(0, 12)}`);
-		await handle.stop(values.stop.graceSeconds);
-		await handle.remove();
-	}
-	await removeNetwork(network.name, {
+	failures.push(...await runCleanup([
+		...handles.flatMap((handle, position) => [
+			{ name: `stop ${handle.id}`, run: async () => {
+				report(`[${position + 1}/${handles.length}] stopping ${handle.id.slice(0, 12)}`);
+				return handle.stop(values.stop.graceSeconds, Date.now() + values.readiness.harnessSeconds * 1000);
+			} },
+			{ name: `remove ${handle.id}`, run: () => handle.remove(Date.now() + values.readiness.harnessSeconds * 1000) },
+		]),
+		{ name: "recover unacknowledged containers", run: () => recoverRunContainers({
+			labelKey: values.label.key, labelValue,
+			captureLimitBytes: values.capture.maximumBytes,
+			// Recovery gets its own bounded harness-operation window after the
+			// ordinary handle cleanup; expired startup deadlines are not reused.
+			deadline: Date.now() + values.readiness.harnessSeconds * 1000,
+			...(ownedWorkDirectory === undefined ? {} : { captureDirectory: ownedWorkDirectory }),
+			...(options.executable === undefined ? {} : { executable: options.executable }),
+		}) },
+		...(networkCreated ? [{ name: "remove network", run: () => removeNetwork(networkName, {
+		deadline: Date.now() + values.readiness.harnessSeconds * 1000,
 		captureLimitBytes: values.capture.maximumBytes,
-		captureDirectory: workDirectory,
+		...(ownedWorkDirectory === undefined ? {} : { captureDirectory: ownedWorkDirectory }),
 		...(options.executable !== undefined ? { executable: options.executable } : {}),
-	});
-	await rm(workDirectory, { recursive: true, force: true });
-	report(`teardown finished after ${elapsedSeconds(teardownStartedAt)}s`);
-
-	// 8. Leak check
-	const leakCheck = await checkForLeaks({
+		}) }] : []),
+		{ name: "recover unacknowledged networks", run: () => recoverRunNetworks({
+			labelKey: values.label.key, labelValue,
+			captureLimitBytes: values.capture.maximumBytes,
+			deadline: Date.now() + values.readiness.harnessSeconds * 1000,
+			...(ownedWorkDirectory === undefined ? {} : { captureDirectory: ownedWorkDirectory }),
+			...(options.executable === undefined ? {} : { executable: options.executable }),
+		}) },
+		{ name: "leak check", run: () => checkForLeaks({
+		deadline: Date.now() + values.readiness.harnessSeconds * 1000,
 		labelKey: values.label.key,
 		labelValue,
 		captureLimitBytes: values.capture.maximumBytes,
 		captureDirectory: tmpdir(),
 		...(options.executable !== undefined ? { executable: options.executable } : {}),
-	});
-
-	if (!leakCheck.ok) {
-		return {
-			ok: false,
-			reason: "SETUP_FAILED",
-			message: `Leak check failed: ${leakCheck.message}`,
-		};
-	}
-
-	return finalOutcome;
+		}) },
+		{ name: "remove scratch directory", run: async () => {
+			if (ownedWorkDirectory !== undefined) await rm(ownedWorkDirectory, { recursive: true, force: true });
+		} },
+	]));
+	report(`teardown finished after ${elapsedSeconds(teardownStartedAt)}s`);
+	if (failures.length) return { ok: false, reason: "SETUP_FAILED", message: failures.join("; "), data: data() };
+	return { ...finalOutcome, data: data() };
 }

@@ -3,13 +3,13 @@
 
 // The severance proxy: a forwarding TCP proxy with a control listener. It
 // forwards bytes untouched in both directions until it is armed at a named
-// severance point; when armed, it severs the matched side with a reset — a
-// close with unread pending data, so the peer observes a reset (RST) rather
-// than the orderly close that would let it read to the end of the stream.
+// severance point; when armed, it abruptly terminates the matched side.
+// Real-socket tests require a reset (RST), not an orderly end of stream.
 // The severance points are enumerated in the values the caller passes before
 // any injector is written, and the control channel refuses an unknown point.
 
-import type { Server, Socket } from "bun";
+import type { Server, Socket, TCPSocketListener } from "bun";
+import { HttpResponseStatus } from "./http-response-status.ts";
 
 // The points at which the proxy can sever, enumerated before the injector is
 // written: "client" severs the client-facing half of a relayed connection,
@@ -37,12 +37,12 @@ export type SeveranceProxyOptions = {
 	readonly controlPort: number;
 };
 
-export type SeveranceMode = "immediate" | "response";
+export type SeveranceMode = "immediate" | "response" | "observe";
 
 export type SeveranceProxyHandle = {
 	// Arms the named point directly, the programmatic route the control
 	// channel itself goes through. Refuses an unknown point by name.
-	arm(point: string, options?: { readonly threshold?: number; readonly mode?: SeveranceMode }): { ok: true; armed: SeverancePoint } | { ok: false; reason: "unknown-point"; point: string };
+	arm(point: string, options?: { readonly threshold?: number; readonly mode?: SeveranceMode }): { ok: true; armed: SeverancePoint } | { ok: false; reason: "unknown-point" | "invalid-options"; point: string };
 	// Disarms the named point, so connections opened afterwards are relayed
 	// untouched again. Arming is a state the proxy holds rather than a one-shot
 	// act, and every scenario's profile points at this proxy, so a point left
@@ -68,35 +68,80 @@ export type SeveranceProxyStart =
 type Relay = {
 	readonly client: Socket;
 	readonly agent: Socket;
+	readonly selected: Map<SeverancePoint, ArmedConfig>;
+	requestPrefix: Buffer;
+	requestLine: string | undefined;
+	readonly responseStatus: HttpResponseStatus;
+	statusCounted: boolean;
+	readonly observations: ReadonlySet<ArmedConfig>;
 };
 
+type ArmedConfig = { readonly arm: string; readonly mode: SeveranceMode; readonly threshold: number; readonly requestLine?: string; count: number; severed: number; suppressedResponseBytes: number; readonly statusCounts: Record<string, number> };
+
+function armConfiguration(mode: SeveranceMode, threshold: number): ArmedConfig {
+	return { arm: crypto.randomUUID(), mode, threshold, count: 0, severed: 0, suppressedResponseBytes: 0, statusCounts: {} };
+}
+
+function validArmOptions(mode: unknown, threshold: number): mode is SeveranceMode {
+	return (mode === "immediate" || mode === "response" || mode === "observe") && Number.isSafeInteger(threshold) && threshold >= 0;
+}
+
 export async function startSeveranceProxy(options: SeveranceProxyOptions): Promise<SeveranceProxyStart> {
-	const armed = new Map<SeverancePoint, { mode: SeveranceMode; threshold: number; count: number }>();
+	const armed = new Map<SeverancePoint, ArmedConfig>();
 	const relays = new Set<Relay>();
 	const pending = new Map<Socket, Buffer[]>();
 
-	// The severance itself: leave data unread pending on the socket and close
-	// it abruptly, so the kernel answers the peer with a reset rather than a
-	// FIN. A graceful shutdown would let the peer read to the end of the
-	// stream — exactly the case this proxy exists to exclude.
-	function severRelay(relay: Relay, point: SeverancePoint): void {
+	// Never inject synthetic bytes or forward the answer before terminating.
+	function severRelay(relay: Relay, point: SeverancePoint, suppressedResponseBytes = 0): void {
+		const config = relay.selected.get(point);
+		if (config === undefined) return;
+		relay.selected.delete(point);
+		config.severed++;
+		config.suppressedResponseBytes += suppressedResponseBytes;
 		const target = point === "client" ? relay.client : relay.agent;
-		try {
-			// The unread pending byte is what distinguishes this close from an
-			// orderly one: the peer's read ends in a reset, not an EOF.
-			target.write("\x00");
-			target.flush();
-		} catch {
-			// The half already went away: there is nothing left to reset.
-		}
 		target.terminate();
 	}
 
-	const control: Server<undefined> = Bun.serve({
+	function selectRelay(relay: Relay, point: SeverancePoint, config: ArmedConfig): void {
+		if (config.requestLine !== undefined && relay.requestLine !== config.requestLine) return;
+		config.count++;
+		if (config.count <= config.threshold) return;
+		relay.selected.set(point, config);
+		if (config.mode === "immediate") severRelay(relay, point);
+	}
+
+	// The cleartext client opens one HTTP/1.1 request per connection with
+	// Connection: close. Inspect only its bounded first line; never scan bodies
+	// for a matching string, reinterpret HTTP/2, or retain credential headers.
+	function observeRequest(relay: Relay, chunk: Buffer): void {
+		if (relay.requestLine !== undefined) return;
+		const maximumRequestLineBytes = 8192;
+		relay.requestPrefix = Buffer.concat([relay.requestPrefix, chunk.subarray(0, maximumRequestLineBytes - relay.requestPrefix.length)]);
+		const end = relay.requestPrefix.indexOf("\r\n");
+		if (end < 0 && relay.requestPrefix.length < maximumRequestLineBytes) return;
+		relay.requestLine = end < 0 ? "" : relay.requestPrefix.subarray(0, end).toString("utf8");
+		relay.requestPrefix = Buffer.alloc(0);
+		for (const [point, config] of armed) {
+			if (config.mode === "observe" && !relay.observations.has(config)) continue;
+			if (config.requestLine !== undefined) selectRelay(relay, point, config);
+		}
+	}
+
+	let control: Server<undefined>;
+	try {
+	control = Bun.serve({
 		hostname: options.controlAddress,
 		port: options.controlPort,
 		fetch: async (request) => {
 			const url = new URL(request.url);
+			if (request.method === "GET" && url.pathname.startsWith("/observed/")) {
+				const point = url.pathname.slice("/observed/".length);
+				const config = isSeverancePoint(point) ? armed.get(point) : undefined;
+				if (config === undefined) return new Response("no active arming\n", { status: 404 });
+				return Response.json({ arm: config.arm, mode: config.mode, requestLine: config.requestLine, severed: config.severed,
+					suppressedResponseBytes: config.suppressedResponseBytes,
+					...(config.mode === "observe" ? { matchedRequests: config.count, statusCounts: config.statusCounts } : {}) });
+			}
 			if (request.method !== "POST") {
 				return new Response("control: POST /arm/<point> or /disarm/<point>\n", { status: 404 });
 			}
@@ -118,25 +163,38 @@ export async function startSeveranceProxy(options: SeveranceProxyOptions): Promi
 
 			// Parse options from query string for the control channel
 			const params = url.searchParams;
-			const threshold = params.has("threshold") ? Number(params.get("threshold")) : 0;
-			const mode = params.get("mode") === "response" ? "response" : "immediate";
-
-			armed.set(point, { mode, threshold, count: 0 });
-			for (const relay of relays) {
-				const config = armed.get(point)!;
-				if (config.mode === "immediate") {
-					severRelay(relay, point);
-				}
+			const writtenThreshold = params.get("threshold") ?? "0";
+			const threshold = Number(writtenThreshold);
+			const mode = params.get("mode") ?? "immediate";
+			const requestLine = params.get("request-line");
+			if ([...params.keys()].some(key => !["mode", "threshold", "request-line"].includes(key) || params.getAll(key).length !== 1)
+				|| (requestLine !== null && (!["response", "observe"].includes(mode) || threshold !== 0 || !/^(GET|POST) \/[A-Za-z0-9/_-]+ HTTP\/1\.1$/.test(requestLine) || requestLine.length > 1024))
+				|| (mode === "observe" && requestLine === null)
+				|| !/^(0|[1-9][0-9]*)$/.test(writtenThreshold) || !validArmOptions(mode, threshold)) {
+				return new Response("invalid severance options: require a declared mode and nonnegative safe-integer threshold\n", { status: 400 });
 			}
-			return new Response(`armed: ${point} (mode=${mode}, threshold=${threshold})\n`, { status: 200 });
+
+			armed.set(point, { ...armConfiguration(mode, threshold), ...(requestLine === null ? {} : { requestLine }) });
+			for (const relay of relays) {
+				// Observation belongs only to requests starting after this arming.
+				if (mode !== "observe") selectRelay(relay, point, armed.get(point)!);
+			}
+			return new Response(`armed: ${point} (mode=${mode}, threshold=${threshold})\n`, { status: 200,
+				headers: { "x-severance-arm": armed.get(point)!.arm } });
 		},
 	});
 
-	const forwarding = Bun.listen({
+	} catch (failure) {
+		return { ok: false, reason: "listen-failed", message: `control listener: ${failure instanceof Error ? failure.message : String(failure)}` };
+	}
+	let forwarding: TCPSocketListener<undefined>;
+	try {
+	forwarding = Bun.listen({
 		hostname: options.listenAddress,
 		port: options.listenPort,
 		socket: {
 			open(client: Socket<undefined>): void {
+				const observations = new Set([...armed.values()].filter(config => config.mode === "observe"));
 				// The client may send before the upstream connect resolves; those
 				// bytes are held per client and flushed to the agent when the
 				// relay is ready, so nothing between the client and the proxy is
@@ -147,21 +205,31 @@ export async function startSeveranceProxy(options: SeveranceProxyOptions): Promi
 					port: options.upstreamPort,
 					socket: {
 						data(agent: Socket<undefined>, chunk: Buffer): void {
-							// Forwarded untouched: no inspection, no rewriting.
-							client.write(chunk);
-
+							for (const relay of relays) {
+								if (relay.agent !== agent || relay.statusCounted) continue;
+								const status = relay.responseStatus.read(chunk);
+								if (status === undefined) continue;
+								relay.statusCounted = true;
+								for (const [point, config] of relay.selected) {
+									if (config.mode === "observe" && armed.get(point) === config) {
+										config.statusCounts[String(status)] = (config.statusCounts[String(status)] ?? 0) + 1;
+									}
+								}
+							}
 							// If armed in response mode, sever the relay now that the
-							// agent has started answering.
+							// agent has started answering, before any answer bytes escape.
 							for (const [point, config] of armed) {
-								if (config.mode === "response" && config.count > config.threshold) {
+								if (config.mode === "response") {
 									// We need the relay object to sever. We'll find it in relays.
 									for (const relay of relays) {
-										if (relay.agent === agent) {
-											severRelay(relay, point);
+										if (relay.agent === agent && relay.selected.get(point) === config) {
+											severRelay(relay, point, chunk.byteLength);
+											return;
 										}
 									}
 								}
 							}
+							client.write(chunk);
 						},
 						close(): void {
 							client.end();
@@ -172,19 +240,16 @@ export async function startSeveranceProxy(options: SeveranceProxyOptions): Promi
 					},
 				})
 					.then((agent) => {
-						const relay: Relay = { client, agent };
+						const relay: Relay = { client, agent, selected: new Map(), requestPrefix: Buffer.alloc(0), requestLine: undefined,
+							responseStatus: new HttpResponseStatus(), statusCounted: false, observations };
 						relays.add(relay);
+						for (const [point, config] of armed) selectRelay(relay, point, config);
 						const held = pending.get(client);
 						pending.delete(client);
 						if (held !== undefined) {
 							for (const chunk of held) {
+								observeRequest(relay, chunk);
 								agent.write(chunk);
-							}
-						}
-						for (const [point, config] of armed) {
-							config.count++;
-							if (config.mode === "immediate" && config.count > config.threshold) {
-								severRelay(relay, point);
 							}
 						}
 					})
@@ -197,6 +262,7 @@ export async function startSeveranceProxy(options: SeveranceProxyOptions): Promi
 				// Forwarded untouched in the request direction.
 				for (const relay of relays) {
 					if (relay.client === client) {
+						observeRequest(relay, chunk);
 						relay.agent.write(chunk);
 						return;
 					}
@@ -229,6 +295,10 @@ export async function startSeveranceProxy(options: SeveranceProxyOptions): Promi
 		},
 	});
 
+	} catch (failure) {
+		await control.stop(true);
+		return { ok: false, reason: "listen-failed", message: `forwarding listener: ${failure instanceof Error ? failure.message : String(failure)}` };
+	}
 	const handle: SeveranceProxyHandle = {
 		arm(point, options) {
 			if (!isSeverancePoint(point)) {
@@ -236,12 +306,11 @@ export async function startSeveranceProxy(options: SeveranceProxyOptions): Promi
 			}
 			const mode = options?.mode ?? "immediate";
 			const threshold = options?.threshold ?? 0;
-			armed.set(point, { mode, threshold, count: 0 });
+			// Observation requires an explicit HTTP request target via control.
+			if (!validArmOptions(mode, threshold) || mode === "observe") return { ok: false, reason: "invalid-options", point };
+			armed.set(point, armConfiguration(mode, threshold));
 			for (const relay of relays) {
-				const config = armed.get(point)!;
-				if (config.mode === "immediate") {
-					severRelay(relay, point);
-				}
+				selectRelay(relay, point, armed.get(point)!);
 			}
 			return { ok: true as const, armed: point };
 		},

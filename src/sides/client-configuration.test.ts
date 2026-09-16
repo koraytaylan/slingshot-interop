@@ -4,6 +4,7 @@
 import { describe, it, expect } from "bun:test";
 import {
 	writeScratchHome,
+	expectedProfileTargetDigest,
 	serializeProfile,
 	serializeSelection,
 	serializeSnapshot,
@@ -16,6 +17,15 @@ import {
 import { rm } from "node:fs/promises";
 
 describe("Client Configuration", () => {
+	it("target expectations follow canonical author and principal, not password or publisher", () => {
+		const profile = { deployment: sixPointFiveDeployment, authorAddress: "HTTP://Author.Example.com/", username: "admin", password: "first", publisherAddress: "http://publisher" };
+		const expected = expectedProfileTargetDigest(profile);
+		const rotated = { ...profile, authorAddress: "http://author.example.com", password: "rotated", publisherAddress: "http://other-publisher" };
+		expect(expectedProfileTargetDigest(rotated)).toBe(expected);
+		expect(expectedProfileTargetDigest({ ...profile, username: "other" })).not.toBe(expected);
+		expect(expectedProfileTargetDigest({ ...profile, authorAddress: "http://other-author" })).not.toBe(expected);
+		expect(expectedProfileTargetDigest({ ...profile, deployment: "other-deployment" })).not.toBe(expected);
+	});
 	describe("serializeProfile", () => {
 		it("serializes a profile with the exact shape the client expects", () => {
 			const profile: ProfileDocument = {
@@ -90,6 +100,8 @@ describe("Client Configuration", () => {
 			};
 			const home = await writeScratchHome(options);
 			try {
+				expect(home.expectedTargetDigests).toEqual({ main: expectedProfileTargetDigest(options) });
+				expect(Object.isFrozen(home.expectedTargetDigests)).toBe(true);
 				// Check structure
 				expect(home.rootPath).toContain(".config/slingshot");
 				
@@ -137,6 +149,10 @@ describe("Client Configuration", () => {
 			const home = await writeScratchHome(options);
 			try {
 				const profileMain = await Bun.file(`${home.rootPath}/profiles/main.toml`).text();
+				expect(home.expectedTargetDigests).toEqual({
+					main: expectedProfileTargetDigest(options),
+					alt: expectedProfileTargetDigest(options.secondProfile),
+				});
 				const profileAlt = await Bun.file(`${home.rootPath}/profiles/alt.toml`).text();
 				
 				expect(profileMain).toContain(`deployment = "${sixPointFiveDeployment}"`);

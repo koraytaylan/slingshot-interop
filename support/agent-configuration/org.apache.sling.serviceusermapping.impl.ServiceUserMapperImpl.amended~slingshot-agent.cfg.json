@@ -1,0 +1,6 @@
+{
+  "user.mapping": [
+    "rs.slingshot.agent.core:state=[slingshot-agent-state]",
+    "rs.slingshot.agent.core:maintenance=[slingshot-agent-state]"
+  ]
+}

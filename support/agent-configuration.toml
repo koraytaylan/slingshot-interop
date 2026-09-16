@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright 2026 Koray Taylan Davgana
+
+# Reviewed harness setup fixtures, not an assertion about candidate package contents.
+[files]
+"org.apache.sling.jcr.repoinit.RepositoryInitializer~slingshot-agent.cfg.json" = "ac121b23d3bb82937fc3194beb903feed131c3972af6893ab977b2225a2e8d63"
+"org.apache.sling.serviceusermapping.impl.ServiceUserMapperImpl.amended~slingshot-agent.cfg.json" = "205e0f4ba9e0bea4898856a943d80f96cef90d20095e6db77dda486c6db905ac"
+"rs.slingshot.agent.http.AuthorizationGate.cfg.json" = "0ad95f9d02957f4084d66fac39cbac0d28bd19d16236ec5e3ae8a8f6b2af2bff"

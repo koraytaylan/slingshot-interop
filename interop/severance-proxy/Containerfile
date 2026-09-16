@@ -17,5 +17,6 @@ COPY .tooling/bun-linux-x64/bun /usr/local/bin/bun
 # The proxy's own source, carried into the image so the container starts it
 # directly and no mount of harness internals is needed at run time.
 COPY src/harness/severance-proxy.ts /opt/severance-proxy/severance-proxy.ts
+COPY src/harness/http-response-status.ts /opt/severance-proxy/http-response-status.ts
 
 ENTRYPOINT ["/usr/local/bin/bun", "/opt/severance-proxy/severance-proxy.ts"]

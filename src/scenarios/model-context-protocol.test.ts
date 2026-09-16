@@ -9,6 +9,7 @@
 import { describe, expect, test } from "bun:test";
 import {
 	answerFor,
+	assertControlAnswer,
 	answeredDocuments,
 	calledToolName,
 	catalogOf,
@@ -21,6 +22,26 @@ import {
 	requestLines,
 	resultOf,
 } from "./model-context-protocol.scenario.ts";
+
+describe("catalog sweep answer evidence", () => {
+	const answer = (outcome: unknown) => ({ content: [{ type: "text", text: JSON.stringify({ outcome }) }] });
+	test("missing, malformed and undeclared outcomes cannot count as daemon answers", () => {
+		for (const result of [{}, { content: [] }, { content: [{ type: "text", text: "not JSON" }] },
+			answer(undefined), answer(null), answer(7), answer(""), answer("invented"),
+			answer("local_application_error"), answer("operation_result")]) {
+			expect(() => assertControlAnswer("operation-list", result)).toThrow();
+		}
+	});
+	test("only a control's own declared outcome counts", () => {
+		for (const [name, outcome] of [["operation-list", "operation_list_page"],
+			["operation-status", "operation_status"], ["operation-status", "operation_recovery_required"],
+			["operation-wait", "operation_result"], ["operation-wait", "operation_terminal_error"],
+			["operation-result", "structured_result_artifact_access"], ["maintenance-preview", "maintenance_preview"]]) {
+			expect(() => assertControlAnswer(name!, answer(outcome))).not.toThrow();
+		}
+		expect(() => assertControlAnswer("invented-control", answer("operation_list_page"))).toThrow();
+	});
+});
 
 describe("the protocol request framing", () => {
 	test("one request line is one JSON object carrying the revision it speaks", () => {
@@ -88,13 +109,26 @@ describe("reading the server's answers", () => {
 	});
 
 	test("one request is answered exactly once", () => {
-		const once = answeredDocuments('{"id":"one","result":{}}');
+		const once = answeredDocuments('{"jsonrpc":"2.0","id":"one","result":{}}');
 		expect(answerFor(once, "one").id).toBe("one");
 		// No answer at all, and two answers: both are protocol violations, and
 		// the second is the one a lenient reader would silently accept.
 		expect(() => answerFor(once, "absent")).toThrow(/no answer carried the identifier/);
-		const twice = answeredDocuments('{"id":"one","result":{}}\n{"id":"one","result":{}}');
+		const twice = answeredDocuments('{"jsonrpc":"2.0","id":"one","result":{}}\n{"jsonrpc":"2.0","id":"one","result":{}}');
 		expect(() => answerFor(twice, "one")).toThrow(/answered 2 times/);
+	});
+
+	test("a response must identify the JSON-RPC revision", () => {
+		for (const revision of [undefined, null, 2, "1.0", "3.0"]) {
+			expect(() => answeredDocuments(JSON.stringify({ jsonrpc: revision, id: "one", result: {} }))).toThrow(/revision/);
+		}
+	});
+
+	test("a tool result must be an object, not merely present", () => {
+		for (const result of [null, [], "text", 7, true]) {
+			const document = answerFor(answeredDocuments(JSON.stringify({ jsonrpc: "2.0", id: "one", result })), "one");
+			expect(() => resultOf(document)).toThrow(/result is not an object/);
+		}
 	});
 
 	test("a result is returned and an error is refused by name", () => {
@@ -108,6 +142,12 @@ describe("reading the server's answers", () => {
 });
 
 describe("the tool catalog a consumer reads", () => {
+	test("duplicate tool names cannot inflate coverage or select an arbitrary schema", () => {
+		expect(() => catalogOf({ tools: [
+			{ name: "operation-list", inputSchema: {} },
+			{ name: "operation-list", inputSchema: { required: ["different"] } },
+		] })).toThrow(/duplicate tool/);
+	});
 	test("a catalog of named tools each carrying an input schema is read whole", () => {
 		const tools = catalogOf({
 			tools: [

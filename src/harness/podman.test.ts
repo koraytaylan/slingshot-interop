@@ -19,6 +19,19 @@ async function captureDirectory(): Promise<string> {
 const limitBytes = 1024;
 
 describe("runPodman", () => {
+	test.each(["stdout", "stderr"])("complete %s capture accepts the exact bound and refuses excess", async (stream) => {
+		const directory = await captureDirectory();
+		try {
+			for (const bytes of [4, 5]) {
+				const outcome = await runPodman(["-c", `printf '${"x".repeat(bytes)}'${stream === "stderr" ? " >&2" : ""}`], {
+					executable: shell, captureLimitBytes: 4, captureDirectory: directory, requireCompleteCapture: true,
+				});
+				expect(outcome.ok).toBe(bytes === 4);
+				if (!outcome.ok) expect(outcome.reason).toBe("capture_exceeded");
+			}
+		} finally { await rm(directory, { recursive: true, force: true }); }
+	});
+
 	test("a version query succeeds", async () => {
 		const directory = await captureDirectory();
 		try {

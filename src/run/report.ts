@@ -23,7 +23,22 @@ export type ReportData = {
 		readonly digest: string;
 	}>;
 	readonly scenarios: readonly ScenarioOutcome[];
+	readonly failures?: readonly string[];
+	readonly agentConfiguration?: readonly { readonly name: string; readonly digest: string }[];
 };
+
+// Early refusal is not a run with resolved sides or discovered scenarios.
+export async function writeRefusalReport(workDirectory: string, stage: string, message: string): Promise<void> {
+	const label = `refused-${Date.now()}-${crypto.randomUUID()}`;
+	const document = Bun.TOML.stringify({ label, status: "refused", stage, message });
+	if (document === undefined) throw new Error("early refusal report could not be rendered");
+	await writeFile(join(workDirectory, `${label}.toml`), document);
+}
+
+// Finishing orchestration is not evidence that the scenarios passed.
+export function reportExitCode(data: ReportData): 0 | 1 {
+	return !data.failures?.length && data.scenarios.length > 0 && data.scenarios.every((scenario) => scenario.ok === true) ? 0 : 1;
+}
 
 export async function writeReport(
 	workDirectory: string,

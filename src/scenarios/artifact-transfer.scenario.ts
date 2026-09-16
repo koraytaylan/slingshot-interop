@@ -10,6 +10,8 @@
 import { agentAuthorization, envelope, invoke, machineArguments, resolveLocalArtifactIdentifier, runner, waitTerminal } from "./support.ts";
 import type { StartClientRunnerOptions } from "../sides/client-runtime.ts";
 import type { ContainerHandle } from "../harness/container.ts";
+import { parseUniqueJson } from "../harness/bounded-json.ts";
+import { refuseHttpResponse } from "../harness/http-refusal.ts";
 
 export const scenario = {
 	async run(handle: ContainerHandle, options: StartClientRunnerOptions) {
@@ -52,11 +54,15 @@ export const scenario = {
 			method: "POST",
 			headers: { authorization: agentAuthorization("admin", "admin") },
 			body,
+			redirect: "error",
 			signal: AbortSignal.timeout(30_000),
 		});
-		if (!planting.ok) {
-			return { ok: false, message: `planting the oversized node failed: ${planting.status} ${await planting.text()}` };
+		// Sling POST reports creation with 201 and an update with 200. Other
+		// successful statuses do not establish that this fixture was planted.
+		if ((planting.status !== 200 && planting.status !== 201) || planting.redirected) {
+			return refuseHttpResponse(planting, "planting the oversized node failed");
 		}
+		await planting.body?.cancel();
 
 		// 2. Load it back through the client: the serialized result exceeds
 		// the inline bound, so the operation is answered by artifact
@@ -101,19 +107,35 @@ export const scenario = {
 			return { ok: false, message: `the oversized load ended as ${JSON.stringify(ended.envelope.outcome)} instead of its result` };
 		}
 		const result = ended.envelope.result as Record<string, unknown> | undefined;
-		if (result === undefined) {
+		if (result === undefined || result === null || typeof result !== "object" || Array.isArray(result)) {
 			return { ok: false, message: `the oversized load answered no result document: ${JSON.stringify(ended.envelope)}` };
+		}
+		if (result["path"] !== path) {
+			return { ok: false, message: "the oversized load result does not name the requested repository path" };
 		}
 		if (result["disposition"] !== "artifact") {
 			return { ok: false, message: `the oversized load answered disposition ${JSON.stringify(result["disposition"])} where its document was over the inline bound: ${JSON.stringify(result).slice(0, 800)}` };
+		}
+		if (!hasExactlyFields(result, ["path", "disposition", "artifact"])) {
+			return { ok: false, message: "the oversized load result does not match the artifact result contract" };
 		}
 		const artifact = result["artifact"] as Record<string, unknown> | undefined;
 		const declaredIdentifier = typeof artifact?.["identifier"] === "string" ? String(artifact["identifier"]) : undefined;
 		const declaredSlot = typeof artifact?.["slot"] === "string" ? String(artifact["slot"]) : undefined;
 		const byteLength = typeof artifact?.["byte_length"] === "number" ? Number(artifact["byte_length"]) : undefined;
-		const contentDigest = typeof artifact?.["digest"] === "string" ? String(artifact["digest"]).replace(/^sha256-/, "") : undefined;
-		if (declaredIdentifier === undefined || declaredSlot === undefined || byteLength === undefined || contentDigest === undefined) {
-			return { ok: false, message: `the artifact reference carries no identifier, slot, byte count, or digest: ${JSON.stringify(result).slice(0, 800)}` };
+		const contentDigest = typeof artifact?.["digest"] === "string" ? artifact["digest"] : undefined;
+		const descriptorFields = ["identifier", "slot", "byte_length", "digest", "media_type", "suggested_file_name"];
+		if (artifact === null || typeof artifact !== "object" || Array.isArray(artifact)
+			|| Object.keys(artifact).length !== descriptorFields.length
+			|| !Object.keys(artifact).every((field) => descriptorFields.includes(field))
+			|| declaredIdentifier === undefined || declaredIdentifier.length === 0 || declaredIdentifier.length > 128
+			|| /[^\x21-\x7e]/.test(declaredIdentifier)
+			|| declaredSlot !== "loaded_content_json"
+			|| byteLength === undefined || !Number.isSafeInteger(byteLength) || byteLength <= 0
+			|| contentDigest === undefined || !/^[0-9a-f]{64}$/.test(contentDigest)
+			|| artifact["media_type"] !== "application/json"
+			|| artifact["suggested_file_name"] !== "loaded-content.json") {
+			return { ok: false, message: "the artifact reference is not a valid loaded-content descriptor" };
 		}
 
 		// 4. Fetch the artifact through the client to a destination, and
@@ -167,21 +189,38 @@ export const scenario = {
 			return { ok: false, message: `operation-artifact answered ${JSON.stringify(fetchAnswer.outcome)} instead of the daemon's access entry: ${fetched.stdout.slice(0, 800)}` };
 		}
 		const entry = (fetchAnswer as Record<string, unknown>)["artifact"] as Record<string, unknown> | undefined;
-		if (entry === undefined || typeof entry["artifact_identifier"] !== "string" || Number(entry["byte_length"]) !== byteLength) {
+		const segment = (value: string): string => encodeURIComponent(value).replace(/[!'()*]/g, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+		const accessUri = `slingshot://profiles/${segment(options.scratchHome.profileName)}/environments/${segment(options.scratchHome.environmentName)}/targets/${segment(local.targetDigest)}/operations/${segment(operationIdentifier)}/artifacts/${segment(local.artifactIdentifier)}`;
+		if (entry === undefined || entry === null || typeof entry !== "object" || Array.isArray(entry)
+			|| !hasExactlyFields(entry, ["artifact_identifier", "author_target_identity_digest", "byte_length", "content_digest", "media_type", "operation_identifier", "uri"])
+			|| entry["author_target_identity_digest"] !== local.targetDigest
+			|| entry["uri"] !== accessUri
+			|| entry["artifact_identifier"] !== local.artifactIdentifier
+			|| entry["operation_identifier"] !== operationIdentifier
+			|| entry["content_digest"] !== contentDigest
+			|| entry["byte_length"] !== byteLength
+			|| entry["media_type"] !== artifact["media_type"]) {
 			return { ok: false, message: `the daemon's access entry does not name the artifact the result described: entry ${JSON.stringify(entry).slice(0, 400)} against result ${JSON.stringify(result).slice(0, 400)}` };
 		}
 		const measured = await invoke(handle, ["sh", "-c", `wc -c < ${shellQuote(destination)}; sha256sum ${shellQuote(destination)}`], options);
-		if (!measured.ok) {
-			return { ok: false, message: `reading the fetched artifact failed: ${measured.message}` };
+		if (!measured.ok || measured.exitCode !== 0) {
+			return { ok: false, message: `reading the fetched artifact failed: ${measured.ok ? measured.stderr : measured.message}` };
 		}
-		const [byteCountText, digestLine] = measured.stdout.split("\n");
-		const actualBytes = Number.parseInt(byteCountText?.trim() ?? "", 10);
-		if (Number.isNaN(actualBytes) || actualBytes !== byteLength) {
+		const measurementLines = measured.stdout.split("\n");
+		const [byteCountText, digestLine] = measurementLines;
+		if (measurementLines.length !== 3 || measurementLines[2] !== "") {
+			return { ok: false, message: "artifact measurement did not return exactly two complete output lines" };
+		}
+		const byteCount = byteCountText?.trim() ?? "";
+		const actualBytes = Number(byteCount);
+		if (!/^(0|[1-9][0-9]*)$/.test(byteCount) || !Number.isSafeInteger(actualBytes) || actualBytes !== byteLength) {
 			return { ok: false, message: `byte count mismatch: the result declared ${byteLength}, the destination holds ${byteCountText?.trim()}` };
 		}
-		const actualDigest = digestLine?.split(" ")[0]?.trim().replace(/^sha256-/, "");
-		if (actualDigest === undefined || actualDigest !== contentDigest) {
-			return { ok: false, message: `digest mismatch: the result declared ${contentDigest}, the destination digests to ${actualDigest}` };
+		// GNU sha256sum's text-mode record binds the digest to the destination.
+		// The harness-generated destination has no newline or backslash, so
+		// filename escaping is neither needed nor an alternative accepted form.
+		if (digestLine !== `${contentDigest}  ${destination}`) {
+			return { ok: false, message: "artifact measurement digest record does not match the declared digest and exact destination" };
 		}
 		// The fetched bytes are the canonical result document itself, so the
 		// planted content must be readable inside it: the document is the
@@ -190,19 +229,29 @@ export const scenario = {
 		// asked for it to land and that is inside the client's own runtime
 		// rather than on the host running the harness.
 		const readBack = await invoke(handle, ["cat", destination], options);
-		if (!readBack.ok) {
-			return { ok: false, message: `the fetched result could not be read: ${readBack.message}` };
+		if (!readBack.ok || readBack.exitCode !== 0) {
+			return { ok: false, message: `the fetched result could not be read: ${readBack.ok ? readBack.stderr : readBack.message}` };
 		}
 		const destinationText = readBack.stdout;
 		let carried: Record<string, unknown> | undefined;
 		try {
-			const parsed = JSON.parse(destinationText) as Record<string, unknown>;
+			const parsed = parseUniqueJson(destinationText) as Record<string, unknown>;
+			if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed) || parsed["path"] !== path) {
+				return { ok: false, message: "the fetched result does not name the requested repository path" };
+			}
+			// This scenario plants one leaf, not a subtree. A missing or truncated
+			// child list cannot establish that the complete planted node came back.
+			if (!hasExactlyFields(parsed, ["children", "children_truncated", "path", "properties"])
+				|| !Array.isArray(parsed["children"]) || parsed["children"].length !== 0
+				|| parsed["children_truncated"] !== false) {
+				return { ok: false, message: "the fetched result is not the complete planted leaf document" };
+			}
 			const properties = parsed["properties"];
 			carried = properties !== null && typeof properties === "object" && !Array.isArray(properties)
 				? properties as Record<string, unknown>
 				: undefined;
 		} catch {
-			return { ok: false, message: `the fetched result is not a JSON document: ${destinationText.slice(0, 400)}` };
+			return { ok: false, message: "the fetched result is not a JSON document with unique members" };
 		}
 		if (carried === undefined) {
 			return { ok: false, message: `the fetched result carries no properties table: ${destinationText.slice(0, 400)}` };
@@ -211,9 +260,11 @@ export const scenario = {
 		for (let index = 0; index < propertyCount; index += 1) {
 			const name = `text${String(index).padStart(4, "0")}`;
 			const entry = carried[name];
-			const value = entry !== null && typeof entry === "object" && !Array.isArray(entry)
-				? (entry as Record<string, unknown>)["value"]
-				: undefined;
+			const property = entry !== null && typeof entry === "object" && !Array.isArray(entry)
+				? entry as Record<string, unknown> : undefined;
+			const value = property?.["property_type"] === "string" && property["cardinality"] === "single"
+				&& hasExactlyFields(property, ["property_type", "cardinality", "value"])
+				? property["value"] : undefined;
 			if (value !== plantedRun) {
 				return { ok: false, message: `the fetched result does not carry the planted run at property ${name}: it carries ${String(value).slice(0, 80)}` };
 			}
@@ -221,6 +272,11 @@ export const scenario = {
 		return { ok: true, message: `artifact transfer: ${byteLength} bytes answered by reference and verified at the destination, carrying all ${propertyCount} planted properties of ${propertyBytes} bytes` };
 	},
 };
+
+function hasExactlyFields(value: Record<string, unknown>, fields: readonly string[]): boolean {
+	const actual = Object.keys(value);
+	return actual.length === fields.length && actual.every((field) => fields.includes(field));
+}
 
 function shellQuote(value: string): string {
 	return `'${value.split("'").join(`'\\''`)}'`;

@@ -18,6 +18,8 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Values } from "../harness/values.ts";
+import { canonicalTargetAddress } from "./target-address.ts";
+import { basicPrincipalDigest, targetDigestForPrincipal } from "./target-identity.ts";
 
 // The root components, the profile directory name, and the document names:
 // read out of the contract's literals, not restated from memory. The values
@@ -143,7 +145,13 @@ export type ScratchHome = {
 	// reads.
 	readonly profileName: string;
 	readonly environmentName: string;
+	// Computed from authored inputs, never from the client or its database.
+	readonly expectedTargetDigests: Readonly<Record<string, string>>;
 };
+
+export function expectedProfileTargetDigest(profile: Pick<ProfileDocument, "deployment" | "authorAddress" | "username">): string {
+	return targetDigestForPrincipal(profile.deployment, canonicalTargetAddress(profile.authorAddress), basicPrincipalDigest(profile.username));
+}
 
 export type WriteScratchHomeOptions = {
 	// The profile the harness authors: the 6.5 deployment with basic
@@ -192,6 +200,10 @@ async function ensureOwnedOnly(path: string): Promise<void> {
 export async function writeScratchHome(
 	options: WriteScratchHomeOptions,
 ): Promise<ScratchHome> {
+	const expectedTargetDigests = Object.freeze(Object.fromEntries([
+		[options.profileName, expectedProfileTargetDigest(options)],
+		...(options.secondProfile ? [[options.secondProfile.name, expectedProfileTargetDigest(options.secondProfile)]] : []),
+	]));
 	const homePath = await mkdtemp(join(options.parent ?? tmpdir(), "client-home-"));
 	await chmod(homePath, 0o700);
 	let rootPath = homePath;
@@ -255,7 +267,7 @@ export async function writeScratchHome(
 	// lists with the exact digest of each.
 	await writeOwnedOnly(join(rootPath, configurationSnapshotFileName), serializeSnapshot(sources));
 
-	return { homePath, rootPath, profileName: options.profileName, environmentName: options.environment };
+	return { homePath, rootPath, profileName: options.profileName, environmentName: options.environment, expectedTargetDigests };
 }
 
 // The name the author runtime answers to on the run's network. The severance

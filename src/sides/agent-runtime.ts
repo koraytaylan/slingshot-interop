@@ -9,7 +9,10 @@
 // own bound.
 
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { createConfigurationFolder, uploadConfiguration } from "./configuration-folder.ts";
+import { readAgentConfigurations } from "./agent-configuration.ts";
+import { isStateRouteRefusal } from "./state-route-readiness.ts";
+import { readBoundedJson } from "../harness/bounded-json.ts";
 import { inflateRawSync } from "node:zlib";
 import {
 	startContainer,
@@ -51,6 +54,8 @@ export type StartSlingRuntimeOptions = {
 	// pending is the difference between a reader who can see the author
 	// starting and a reader watching a number climb.
 	readonly progress?: (line: string) => void;
+	// Captures the exact verified setup bytes before they are installed.
+	readonly configurationObserved?: (inputs: readonly { readonly name: string; readonly digest: string }[]) => void;
 };
 
 export type SlingRuntimeHandle = {
@@ -107,9 +112,9 @@ export type AwaitActiveOutcome = { readonly ok: true } | {
 // the bundle: the repoinit initializer creating the slingshot-agent-state
 // system user and its /var/slingshot-agent tree with its ACLs, the service-user
 // mapping binding the bundle's subservices to that user, and the authorization
-// gate naming the group permitted to submit. All three are read from the agent
-// repository's own ui.config content, so the harness carries no second copy of
-// their bytes. Without the first two every state-backed route answers 500: the
+// gate naming the group permitted to submit. All three are explicit, digest-
+// verified harness fixtures; an ambient checkout cannot alter them.
+// Without the first two every state-backed route answers 500: the
 // service login the bundle asks for maps to no system user. Without the third
 // the gate's own default is not applied by the platform, the permitted set is
 // empty, and every submission is refused with a 403 — the gate's own rule being
@@ -130,15 +135,8 @@ async function installStateConfiguration(
 		"utf8",
 	).toString("base64");
 	const headers = { authorization: `Basic ${auth}` };
-	const configsRoot = join(
-		agentRepositoryRoot(),
-		"ui.config/src/main/content/jcr_root/apps/slingshot-agent/osgiconfig/config",
-	);
-	const names = [
-		"org.apache.sling.jcr.repoinit.RepositoryInitializer~slingshot-agent.cfg.json",
-		"org.apache.sling.serviceusermapping.impl.ServiceUserMapperImpl.amended~slingshot-agent.cfg.json",
-		"rs.slingshot.agent.http.AuthorizationGate.cfg.json",
-	];
+	const configurations = await readAgentConfigurations();
+	options.configurationObserved?.(configurations.map(({ name, digest }) => ({ name, digest })));
 	// The configuration tree must exist before the configs are handed over:
 	// the console's own install route refuses an absent parent.
 	for (const folder of [
@@ -146,35 +144,14 @@ async function installStateConfiguration(
 		"/apps/slingshot-agent/osgiconfig",
 		"/apps/slingshot-agent/osgiconfig/config",
 	]) {
-		const made = await fetch(`${base}${folder}`, {
-			method: "POST",
-			headers,
-			body: new URLSearchParams({ "jcr:primaryType": "sling:Folder" }),
-		});
-		if (made.status >= 400 && made.status !== 409 && made.status !== 201) {
-			return {
-				ok: false,
-				reason: "INSTALL_FAILED",
-				message: `The author runtime refused the configuration folder ${folder} with ${made.status}.`,
-			};
-		}
+		const made = await createConfigurationFolder(`${base}${folder}`, headers.authorization,
+			options.consoleDeadline, options.values.readiness.pollIntervalSeconds * 1000);
+		if (!made.ok) return made;
 	}
-	for (const name of names) {
-		const bytes = await readFile(join(configsRoot, name));
-		const form = new FormData();
-		form.append("*", new Blob([new Uint8Array(bytes)]), name);
-		const handed = await fetch(`${base}/apps/slingshot-agent/osgiconfig/config/`, {
-			method: "POST",
-			headers,
-			body: form,
-		});
-		if (handed.status >= 400) {
-			return {
-				ok: false,
-				reason: "INSTALL_FAILED",
-				message: `The author runtime refused service configuration ${name} with ${handed.status}.`,
-			};
-		}
+	for (const { name, bytes } of configurations) {
+		const handed = await uploadConfiguration(`${base}/apps/slingshot-agent/osgiconfig/config/`,
+			headers.authorization, name, bytes, options.consoleDeadline, options.values.readiness.pollIntervalSeconds * 1000);
+		if (!handed.ok) return { ...handed, message: `${name}: ${handed.message}` };
 	}
 	return { ok: true };
 }
@@ -341,20 +318,16 @@ async function installScenarioContentRoot(
 	return { ok: true };
 }
 
-// The agent repository this run's bundle jar was built from. The agent side's
-// pinning names that repository, so the configuration bytes are read from it
-// rather than restated here.
-function agentRepositoryRoot(): string {
-	return process.env['SLINGSHOT_AGENT_ROOT'] ?? "/home/koraytaylan/Workspace/slingshot/slingshot-agent";
-}
-
 // The console's bundle listing: every bundle must report Active. The listing
 // names each bundle's state, so a refusal can say what the bundle actually
 // became instead of a bare timeout.
 async function listBundleStates(
 	port: number,
 	options: StartSlingRuntimeOptions,
+	deadline?: Date,
 ): Promise<Map<string, string> | null> {
+	const remaining = deadline === undefined ? 10_000 : Math.min(10_000, deadline.getTime() - Date.now());
+	if (remaining <= 0) return null;
 	const base = options.consoleBase ?? `http://127.0.0.1:${port}`;
 	const auth = Buffer.from(
 		`${options.consoleUsername}:${options.consolePassword}`,
@@ -363,16 +336,19 @@ async function listBundleStates(
 	try {
 		const response = await fetch(`${base}/system/console/bundles.json`, {
 			headers: { authorization: `Basic ${auth}` },
-			signal: AbortSignal.timeout(10_000),
+			redirect: "error",
+			signal: AbortSignal.timeout(remaining),
 		});
-		if (!response.ok) {
-			return null;
-		}
-		const listing = (await response.json()) as {
+		const captured = await readBoundedJson(response, options.values.capture.maximumBytes);
+		if (!captured.ok) return null;
+		const listing = captured.value as {
 			data: { name: string; symbolicName: string | null; state: string }[];
 		};
 		const states = new Map<string, string>();
 		for (const bundle of listing.data) {
+			if (typeof bundle.state !== "string" || typeof (bundle.symbolicName ?? bundle.name) !== "string"
+				|| !(bundle.symbolicName ?? bundle.name)) return null;
+			if (states.has(bundle.symbolicName ?? bundle.name)) return null;
 			// The wait looks a bundle up by the symbolic name its manifest
 			// carries, so the map is keyed by symbolicName — the console's
 			// 'name' field is the Bundle-Name header, a different string.
@@ -384,17 +360,11 @@ async function listBundleStates(
 	}
 }
 
-// The console itself: the root answering is the platform's own readiness
-// signal for the runtime the scenarios talk to.
-async function consoleAnswers(port: number): Promise<boolean> {
-	try {
-		const response = await fetch(`http://127.0.0.1:${port}/`, {
-			signal: AbortSignal.timeout(5_000),
-		});
-		return response.status < 500;
-	} catch {
-		return false;
-	}
+// Console availability is distinct from repository POST availability, which
+// configuration creation checks separately under the same startup deadline.
+export async function consoleAnswers(port: number, options: StartSlingRuntimeOptions): Promise<boolean> {
+	const states = await listBundleStates(port, options);
+	return states !== null && states.size > 0;
 }
 
 // Installs the resolved bundle jar through the platform's own console route:
@@ -450,11 +420,13 @@ export async function awaitActive(
 	options: StartSlingRuntimeOptions,
 ): Promise<AwaitActiveOutcome> {
 	const intervalMs = options.values.readiness.pollIntervalSeconds * 1000;
+	let observed: Map<string, string> | null = null;
 	while (true) {
-		const states = await listBundleStates(port, options);
-		if (states !== null) {
-			const state = states.get(bundleName);
-			if (state === "Active") {
+		const states = await listBundleStates(port, options, options.activeDeadline);
+		if (states !== null) observed = states;
+		if (observed !== null) {
+			const state = observed.get(bundleName);
+			if (states !== null && state === "Active" && Date.now() < options.activeDeadline.getTime()) {
 				return { ok: true };
 			}
 			const remainingMs = options.activeDeadline.getTime() - Date.now();
@@ -512,10 +484,11 @@ async function startSlingRuntimePhases(
 		name: AUTHOR_RUNTIME_NAME,
 		publish: [port],
 		command: [],
-		probe: () => consoleAnswers(port),
+		probe: () => consoleAnswers(port, options),
 		probeIntervalSeconds: options.values.readiness.pollIntervalSeconds,
 		deadline: options.consoleDeadline,
 		stopGraceSeconds: options.values.stop.graceSeconds,
+		cleanupTimeoutSeconds: options.values.readiness.harnessSeconds,
 		captureLimitBytes: options.values.capture.maximumBytes,
 		...(options.captureDirectory !== undefined
 			? { captureDirectory: options.captureDirectory }
@@ -526,104 +499,104 @@ async function startSlingRuntimePhases(
 		return started as ContainerRefusal;
 	}
 	const handle: ContainerHandle = started;
-	phase.begin("writing the author's state configuration");
-	const configured = await installStateConfiguration(port, options);
-	if (!configured.ok) {
-		await handle.stop(options.values.stop.graceSeconds);
-		await handle.remove();
-		return configured;
-	}
-	phase.begin("writing the forgery-token route");
-	const tokenised = await installForgeryToken(port, options);
-	if (!tokenised.ok) {
-		await handle.stop(options.values.stop.graceSeconds);
-		await handle.remove();
-		return tokenised;
-	}
-	phase.begin("installing the administrators group and the caller's membership");
-	const permitted = await installPermittedGroup(
-		options.consoleBase ?? `http://127.0.0.1:${port}`,
-		{
-			authorization: `Basic ${Buffer.from(
-				`${options.consoleUsername}:${options.consolePassword}`,
-				"utf8",
-			).toString("base64")}`,
-		},
-	);
-	if (!permitted.ok) {
-		await handle.stop(options.values.stop.graceSeconds);
-		await handle.remove();
-		return permitted;
-	}
-	phase.begin("planting the run's content root");
-	const contentRoot = await installScenarioContentRoot(
-		options.consoleBase ?? `http://127.0.0.1:${port}`,
-		options.labelValue,
-		{
-			authorization: `Basic ${Buffer.from(
-				`${options.consoleUsername}:${options.consolePassword}`,
-				"utf8",
-			).toString("base64")}`,
-		},
-	);
-	if (!contentRoot.ok) {
-		await handle.stop(options.values.stop.graceSeconds);
-		await handle.remove();
-		return contentRoot;
-	}
-	phase.begin("installing the bundle and waiting for it to become active");
-	const installed = await installBundle(port, options);
-	if (!installed.ok) {
-		await handle.stop(options.values.stop.graceSeconds);
-		await handle.remove();
-		return installed;
-	}
-	let symbolicName: string;
+	let ready = false;
 	try {
-		symbolicName = await bundleSymbolicName(options.bundleJarPath);
-	} catch (error) {
-		// A jar the reader cannot parse is a failed install, not an escape
-		// from the typed refusal union.
-		await handle.stop(options.values.stop.graceSeconds);
-		await handle.remove();
-		return {
-			ok: false,
-			reason: "INSTALL_FAILED",
-			message: `The resolved bundle jar ${options.bundleJarPath} could not be read for its Bundle-SymbolicName: ${
-				error instanceof Error ? error.message : String(error)
-			}.`,
-		};
+		phase.begin("writing the author's state configuration");
+		const configured = await installStateConfiguration(port, options);
+		if (!configured.ok) {
+			return configured;
+		}
+		phase.begin("writing the forgery-token route");
+		const tokenised = await installForgeryToken(port, options);
+		if (!tokenised.ok) {
+			return tokenised;
+		}
+		phase.begin("installing the administrators group and the caller's membership");
+		const permitted = await installPermittedGroup(
+			options.consoleBase ?? `http://127.0.0.1:${port}`,
+			{
+				authorization: `Basic ${Buffer.from(
+					`${options.consoleUsername}:${options.consolePassword}`,
+					"utf8",
+				).toString("base64")}`,
+			},
+		);
+		if (!permitted.ok) {
+			return permitted;
+		}
+		phase.begin("planting the run's content root");
+		const contentRoot = await installScenarioContentRoot(
+			options.consoleBase ?? `http://127.0.0.1:${port}`,
+			options.labelValue,
+			{
+				authorization: `Basic ${Buffer.from(
+					`${options.consoleUsername}:${options.consolePassword}`,
+					"utf8",
+				).toString("base64")}`,
+			},
+		);
+		if (!contentRoot.ok) {
+			return contentRoot;
+		}
+		phase.begin("installing the bundle and waiting for it to become active");
+		const installed = await installBundle(port, options);
+		if (!installed.ok) {
+			return installed;
+		}
+		let symbolicName: string;
+		try {
+			symbolicName = await bundleSymbolicName(options.bundleJarPath);
+		} catch (error) {
+			// A jar the reader cannot parse is a failed install, not an escape
+			// from the typed refusal union.
+			return {
+				ok: false,
+				reason: "INSTALL_FAILED",
+				message: `The resolved bundle jar ${options.bundleJarPath} could not be read for its Bundle-SymbolicName: ${
+					error instanceof Error ? error.message : String(error)
+				}.`,
+			};
+		}
+		const active = await awaitActive(symbolicName, port, options);
+		if (!active.ok) {
+			return active;
+		}
+		phase.begin("the bundle's state route to answer");
+		// Active is the bundle's state, not its servlets'. The state route is the
+		// first thing every scenario and every reconciliation lookup reads, and a
+		// lookup nobody can read yet answers 500 rather than the nothing-there
+		// 404, so the run waits until the route answers the way the agent's own
+		// tier requires before any scenario runs.
+		const stateReady = await awaitStateRoute(port, options);
+		if (!stateReady.ok) {
+			return stateReady;
+		}
+		phase.begin("the continuation-key authority to become ready");
+		// The continuation-key authority is the last thing to become ready, and
+		// the client refuses an agent that advertises it as not ready — its own
+		// rule being that an agent whose tokens would not validate cannot be asked
+		// a paged question. The authority is established by the bundle's own
+		// lifecycle pass, which runs on activation and then on its interval, so a
+		// run that submitted before it settled would be refused for a reason that
+		// has nothing to do with the behavior it came to prove.
+		const authorityReady = await awaitContinuationAuthority(port, options);
+		if (!authorityReady.ok) {
+			return authorityReady;
+		}
+		ready = true;
+		return { ok: true, handle, port };
+	} finally {
+		// A failed start never hands its handle to the caller. Keep ownership
+		// until success, including failures thrown by setup or readiness probes.
+		if (!ready) {
+			try {
+				await handle.stop(options.values.stop.graceSeconds, Date.now() + options.values.readiness.harnessSeconds * 1000);
+			} finally {
+				const removed = await handle.remove(Date.now() + options.values.readiness.harnessSeconds * 1000);
+				if (!removed.ok) throw new Error(`Failed to remove author runtime ${handle.id}: ${removed.message}`);
+			}
+		}
 	}
-	const active = await awaitActive(symbolicName, port, options);
-	if (!active.ok) {
-		// The refusal is returned as-is: it names the captured state and the
-		// deadline. The container is left to the caller's teardown, so the log
-		// remains capturable for the run report.
-		return active;
-	}
-	phase.begin("the bundle's state route to answer");
-	// Active is the bundle's state, not its servlets'. The state route is the
-	// first thing every scenario and every reconciliation lookup reads, and a
-	// lookup nobody can read yet answers 500 rather than the nothing-there
-	// 404, so the run waits until the route answers the way the agent's own
-	// tier requires before any scenario runs.
-	const stateReady = await awaitStateRoute(port, options);
-	if (!stateReady.ok) {
-		return stateReady;
-	}
-	phase.begin("the continuation-key authority to become ready");
-	// The continuation-key authority is the last thing to become ready, and
-	// the client refuses an agent that advertises it as not ready — its own
-	// rule being that an agent whose tokens would not validate cannot be asked
-	// a paged question. The authority is established by the bundle's own
-	// lifecycle pass, which runs on activation and then on its interval, so a
-	// run that submitted before it settled would be refused for a reason that
-	// has nothing to do with the behavior it came to prove.
-	const authorityReady = await awaitContinuationAuthority(port, options);
-	if (!authorityReady.ok) {
-		return authorityReady;
-	}
-	return { ok: true, handle, port };
 }
 
 // Waits until the agent advertises its continuation-key authority as ready,
@@ -641,14 +614,18 @@ export async function awaitContinuationAuthority(
 	).toString("base64");
 	const intervalMs = options.values.readiness.pollIntervalSeconds * 1000;
 	while (true) {
+		const remaining = Math.min(10_000, options.activeDeadline.getTime() - Date.now());
+		if (remaining <= 0) return readinessExpired("continuation authority", options);
 		try {
 			const response = await fetch(`${base}/bin/slingshot/agent/capabilities`, {
 				headers: { authorization: `Basic ${auth}` },
-				signal: AbortSignal.timeout(10_000),
+				redirect: "error",
+				signal: AbortSignal.timeout(remaining),
 			});
-			if (response.ok) {
-				const document = (await response.json()) as { readonly continuation_authority_ready?: unknown };
-				if (document.continuation_authority_ready === true) {
+			const captured = await readBoundedJson(response, options.values.capture.maximumBytes);
+			if (captured.ok && captured.value !== null && typeof captured.value === "object" && !Array.isArray(captured.value)) {
+				const document = captured.value as { readonly continuation_authority_ready?: unknown };
+				if (document.continuation_authority_ready === true && Date.now() < options.activeDeadline.getTime()) {
 					return { ok: true };
 				}
 			}
@@ -666,9 +643,8 @@ export async function awaitContinuationAuthority(
 	}
 }
 
-// Waits until the agent's lookup route answers its nothing-there status for
-// an operation the store has never held, which proves the service-user
-// configuration and the bundle's state access are both live.
+// Waits for the lookup route's empty retryable refusal for an unsubmitted
+// operation. A platform 404 alone is not evidence of the agent's state access.
 export async function awaitStateRoute(
 	port: number,
 	options: StartSlingRuntimeOptions,
@@ -681,15 +657,18 @@ export async function awaitStateRoute(
 	const absent = "0".repeat(64);
 	const intervalMs = options.values.readiness.pollIntervalSeconds * 1000;
 	while (true) {
+		const remaining = Math.min(10_000, options.activeDeadline.getTime() - Date.now());
+		if (remaining <= 0) return readinessExpired("state route", options);
 		try {
 			const response = await fetch(
 				`${base}/bin/slingshot/agent/snapshot?agent_operation_identifier=${absent}`,
 				{
 					headers: { authorization: `Basic ${auth}` },
-					signal: AbortSignal.timeout(10_000),
+					redirect: "error",
+					signal: AbortSignal.timeout(remaining),
 				},
 			);
-			if (response.status === 404) {
+			if (await isStateRouteRefusal(response) && Date.now() < options.activeDeadline.getTime()) {
 				return { ok: true };
 			}
 		} catch {
@@ -704,6 +683,10 @@ export async function awaitStateRoute(
 		}
 		await Bun.sleep(Math.min(intervalMs, Math.max(1, options.activeDeadline.getTime() - Date.now())));
 	}
+}
+
+function readinessExpired(route: string, options: StartSlingRuntimeOptions): AwaitActiveOutcome {
+	return { ok: false, reason: "NEVER_BECAME_READY", message: `The ${route} readiness budget expired at ${options.activeDeadline.toISOString()}.` };
 }
 
 // Reads META-INF/MANIFEST.MF out of the jar through a proper zip parse: a
