@@ -3302,6 +3302,11 @@ that the supplied binaries were built from those commits.
   `38ede8b122dafc38ec321d79a33321bab410ce08` is committed and its rebuilt
   candidate SHA-256 is
   `ee830b9679e39e1151a335a6e0934ea1cb77efec8cf9fece3a63e881e0788be3`.
+- Naming the lock permission modes removed two more numeric-literal findings;
+  the source-policy gate now reports 297 remaining violations. Client commit
+  `af5962a6e33f7612ecf045fd9dab8a30cc4037f5` is committed and its exact
+  rebuilt candidate SHA-256 is
+  `38ef3c585697b7d3bddb04cec9c197cee3d5ac37a7f7920f4ad696f80aff8283`.
 - Final exact-candidate rerun after the comparator cleanup (client commit
   `38ede8b122dafc38ec321d79a33321bab410ce08`) passed all 8/8 scenarios with
   clean teardown. The client archive SHA-256 was
