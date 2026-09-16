@@ -3341,3 +3341,7 @@ that the supplied binaries were built from those commits.
   and Podman access: 439 tests passed, 0 failed, 689,021 assertions across 55
   files in 121.78 seconds. TypeScript compilation also passes. The earlier
   apparent stall was command-observation truncation, not a test failure.
+- The agent sibling's full `scripts/quality` gate completed successfully:
+  Maven reactor build and all PMD/SpotBugs checks passed with zero reported
+  bug instances. The client's source-policy gate remains the outstanding code
+  quality failure at 292 findings; this review did not weaken that policy.
