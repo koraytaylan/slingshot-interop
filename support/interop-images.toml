@@ -44,7 +44,7 @@ tag = "pinned"
 # the build and is explicitly absent until then, like a released slot: the
 # gate refuses an absent build by naming the preparation command, and this
 # file stays the one place the built image is named.
-identifier = "sha256:8b3289003b6871bd8d56386c4d1ec14decd8c9b564a27f0484487efc9cef05a6"
+identifier = "sha256:54201f403c9c081f10e639b099348f2ed1a20b2e2740b705fa1505a4539af8c7"
 
 [probe]
 

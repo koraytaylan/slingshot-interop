@@ -7,6 +7,7 @@ import {
 	TOKEN_HEADER,
 	TOKEN_ROUTE,
 	forgeryHeadersSatisfied,
+	forgeryRefusalHead,
 	inspectAgentPostForgery,
 	isProtectedAgentPost,
 } from "./forgery-protection.ts";
@@ -63,5 +64,18 @@ describe("forgery header inspection", () => {
 
 	test("the planted route spelling is the Adobe one the client fetches", () => {
 		expect(TOKEN_ROUTE).toBe("/libs/granite/csrf/token.json");
+	});
+
+	test("the shipped proxy Containerfile copies the CSRF check into the image", () => {
+		const containerfile = Bun.file(new URL("../../interop/severance-proxy/Containerfile", import.meta.url));
+		return containerfile.text().then((text) => {
+			expect(text).toContain("COPY src/harness/forgery-protection.ts /opt/severance-proxy/forgery-protection.ts");
+			expect(text).toContain("COPY src/harness/severance-proxy.ts /opt/severance-proxy/severance-proxy.ts");
+		});
+	});
+
+	test("a refused forgery is a 403, never a successful admission", () => {
+		expect(forgeryRefusalHead.startsWith("HTTP/1.1 403 ")).toBe(true);
+		expect(/^HTTP\/1\.1 2\d\d /.test(forgeryRefusalHead)).toBe(false);
 	});
 });
