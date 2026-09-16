@@ -11,10 +11,14 @@ import {
 	answerFor,
 	assertControlAnswer,
 	answeredDocuments,
+	assertReachedDaemon,
 	calledToolName,
 	catalogOf,
 	controlsNeedingPriorWork,
 	isControlTool,
+	isReadOnlyRegistryTool,
+	legacyProtocolRevision,
+	legacySessionLines,
 	minimalArgumentsFor,
 	minimalValueFor,
 	protocolRevision,
@@ -185,6 +189,57 @@ describe("the tool catalog a consumer reads", () => {
 		// offers would be answered with an error, and the scenario's own
 		// assertion would then pass for the wrong reason.
 		expect(calledToolName).toBe("operation-list");
+	});
+
+	test("readOnlyHint from the catalog distinguishes registry reads from writes", () => {
+		const tools = catalogOf({
+			tools: [
+				{ name: "list_child_pages", inputSchema: {}, annotations: { readOnlyHint: true } },
+				{ name: "create_page", inputSchema: {}, annotations: { readOnlyHint: false } },
+				{ name: "operation-list", inputSchema: {}, annotations: { readOnlyHint: true } },
+			],
+		});
+		expect(isReadOnlyRegistryTool(tools[0]!)).toBe(true);
+		expect(isReadOnlyRegistryTool(tools[1]!)).toBe(false);
+		expect(isReadOnlyRegistryTool(tools[2]!)).toBe(false);
+	});
+});
+
+describe("the initialized-era session a standard host sends", () => {
+	test("initialize, the initialized notification, then tools/call without a revision", () => {
+		const stream = legacySessionLines({ identifier: "legacy-call", name: "operation-list", arguments: {} });
+		const lines = stream.split("\n").filter((line) => line.length > 0);
+		expect(lines).toHaveLength(3);
+		const initialize = JSON.parse(lines[0]!) as Record<string, unknown>;
+		expect(initialize["method"]).toBe("initialize");
+		expect((initialize["params"] as Record<string, unknown>)["protocolVersion"]).toBe(legacyProtocolRevision);
+		expect(legacyProtocolRevision).toBe("2025-06-18");
+		expect(legacyProtocolRevision).not.toBe(protocolRevision);
+		const notification = JSON.parse(lines[1]!) as Record<string, unknown>;
+		expect(notification["method"]).toBe("notifications/initialized");
+		expect(notification["id"]).toBeUndefined();
+		const call = JSON.parse(lines[2]!) as Record<string, unknown>;
+		expect(call["method"]).toBe("tools/call");
+		expect((call["params"] as Record<string, unknown>)["protocolVersion"]).toBeUndefined();
+		expect((call["params"] as Record<string, unknown>)["name"]).toBe("operation-list");
+	});
+
+	test("empty content is not a daemon answer", () => {
+		expect(() => assertReachedDaemon({ name: "list_child_pages", inputSchema: {}, readOnly: true }, { content: [] })).toThrow(
+			/daemon answer/,
+		);
+		expect(() =>
+			assertReachedDaemon(
+				{ name: "list_child_pages", inputSchema: {}, readOnly: true },
+				{ content: [{ type: "text", text: JSON.stringify({ outcome: "local_application_error" }) }] },
+			),
+		).toThrow(/local_application_error/);
+		expect(() =>
+			assertReachedDaemon(
+				{ name: "list_child_pages", inputSchema: {}, readOnly: true },
+				{ content: [{ type: "text", text: JSON.stringify({ outcome: "operation_receipt" }) }] },
+			),
+		).not.toThrow();
 	});
 });
 

@@ -10,6 +10,7 @@
 
 import type { Server, Socket, TCPSocketListener } from "bun";
 import { HttpResponseStatus } from "./http-response-status.ts";
+import { forgeryRefusalHead, inspectAgentPostForgery } from "./forgery-protection.ts";
 
 // The points at which the proxy can sever, enumerated before the injector is
 // written: "client" severs the client-facing half of a relayed connection,
@@ -35,6 +36,10 @@ export type SeveranceProxyOptions = {
 	// single request over this listener, never a filesystem signal.
 	readonly controlAddress: string;
 	readonly controlPort: number;
+	// When set, state-changing POSTs under /bin/slingshot/agent must carry
+	// this CSRF-Token and a Referer. The Sling starter does not validate
+	// either; leaving this unset restores byte-for-byte forwarding.
+	readonly forgeryToken?: string;
 };
 
 export type SeveranceMode = "immediate" | "response" | "observe";
@@ -71,6 +76,8 @@ type Relay = {
 	readonly selected: Map<SeverancePoint, ArmedConfig>;
 	requestPrefix: Buffer;
 	requestLine: string | undefined;
+	forgeryBuffer: Buffer;
+	forgeryDecided: boolean;
 	readonly responseStatus: HttpResponseStatus;
 	statusCounted: boolean;
 	readonly observations: ReadonlySet<ArmedConfig>;
@@ -125,6 +132,33 @@ export async function startSeveranceProxy(options: SeveranceProxyOptions): Promi
 			if (config.mode === "observe" && !relay.observations.has(config)) continue;
 			if (config.requestLine !== undefined) selectRelay(relay, point, config);
 		}
+	}
+
+	const forgeryToken = options.forgeryToken;
+	function refuseForgery(relay: Relay): void {
+		relay.client.write(forgeryRefusalHead);
+		relay.client.end();
+		relay.agent.terminate();
+	}
+
+	function handleClientBytes(relay: Relay, chunk: Buffer): void {
+		observeRequest(relay, chunk);
+		if (forgeryToken === undefined || relay.forgeryDecided) {
+			relay.agent.write(chunk);
+			return;
+		}
+		relay.forgeryBuffer = Buffer.concat([relay.forgeryBuffer, chunk]);
+		const inspection = inspectAgentPostForgery(relay.forgeryBuffer, forgeryToken);
+		if (inspection.kind === "incomplete") {
+			return;
+		}
+		relay.forgeryDecided = true;
+		if (inspection.kind === "refused") {
+			refuseForgery(relay);
+			return;
+		}
+		relay.agent.write(relay.forgeryBuffer);
+		relay.forgeryBuffer = Buffer.alloc(0);
 	}
 
 	let control: Server<undefined>;
@@ -241,6 +275,7 @@ export async function startSeveranceProxy(options: SeveranceProxyOptions): Promi
 				})
 					.then((agent) => {
 						const relay: Relay = { client, agent, selected: new Map(), requestPrefix: Buffer.alloc(0), requestLine: undefined,
+							forgeryBuffer: Buffer.alloc(0), forgeryDecided: forgeryToken === undefined,
 							responseStatus: new HttpResponseStatus(), statusCounted: false, observations };
 						relays.add(relay);
 						for (const [point, config] of armed) selectRelay(relay, point, config);
@@ -248,8 +283,7 @@ export async function startSeveranceProxy(options: SeveranceProxyOptions): Promi
 						pending.delete(client);
 						if (held !== undefined) {
 							for (const chunk of held) {
-								observeRequest(relay, chunk);
-								agent.write(chunk);
+								handleClientBytes(relay, chunk);
 							}
 						}
 					})
@@ -259,11 +293,9 @@ export async function startSeveranceProxy(options: SeveranceProxyOptions): Promi
 					});
 			},
 			data(client: Socket<undefined>, chunk: Buffer): void {
-				// Forwarded untouched in the request direction.
 				for (const relay of relays) {
 					if (relay.client === client) {
-						observeRequest(relay, chunk);
-						relay.agent.write(chunk);
+						handleClientBytes(relay, chunk);
 						return;
 					}
 				}
@@ -350,6 +382,7 @@ if (import.meta.main) {
 		"SEVERANCE_UPSTREAM_HOST",
 		"SEVERANCE_UPSTREAM_PORT",
 	] as const;
+	const forgeryToken = process.env["SEVERANCE_FORGERY_TOKEN"];
 	const values = new Map<string, string>();
 	for (const name of required) {
 		const value = process.env[name];
@@ -366,6 +399,7 @@ if (import.meta.main) {
 		upstreamPort: Number(values.get("SEVERANCE_UPSTREAM_PORT")),
 		controlAddress: "0.0.0.0",
 		controlPort: Number(values.get("SEVERANCE_CONTROL_PORT")),
+		...(forgeryToken !== undefined && forgeryToken !== "" ? { forgeryToken } : {}),
 	});
 	if (!start.ok) {
 		console.error(`severance-proxy: ${start.message}`);

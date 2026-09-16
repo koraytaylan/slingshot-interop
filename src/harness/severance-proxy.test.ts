@@ -3,6 +3,7 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { createServer, connect, type Socket as NodeSocket } from "node:net";
+import { PLANTED_FORGERY_TOKEN } from "./forgery-protection.ts";
 import { isSeverancePoint, severancePoints, startSeveranceProxy } from "./severance-proxy.ts";
 
 // These tests run over real sockets: a real upstream echo server, the real
@@ -462,5 +463,85 @@ describe("severance proxy over real sockets", () => {
 		const refused = await fetch(`http://${loopback}:${proxy.controlPort}/arm/mid-body`, { method: "POST" });
 		expect(refused.status).toBe(400);
 		expect(await refused.text()).toContain("mid-body");
+	});
+});
+
+describe("forgery protection on agent posts", () => {
+	test("a state-changing agent POST without the planted token is refused and never forwarded", async () => {
+		let forwarded = 0;
+		const upstream = createServer((socket) => {
+			socket.on("data", () => {
+				forwarded++;
+				socket.end("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+			});
+		});
+		await new Promise<void>((resolve) => {
+			upstream.listen(0, loopback, resolve);
+		});
+		const address = upstream.address();
+		if (address === null || typeof address === "string") throw new Error("upstream did not bind");
+		const started = await startSeveranceProxy({
+			listenAddress: loopback,
+			listenPort: anyPort,
+			upstreamAddress: loopback,
+			upstreamPort: address.port,
+			controlAddress: loopback,
+			controlPort: anyPort,
+			forgeryToken: PLANTED_FORGERY_TOKEN,
+		});
+		if (!started.ok) throw new Error(started.message);
+		try {
+			const missing = await fetch(`http://${loopback}:${started.port}/bin/slingshot/agent/submit`, {
+				method: "POST",
+				headers: { connection: "close", referer: "http://severance-proxy/" },
+			});
+			expect(missing.status).toBe(403);
+			expect(forwarded).toBe(0);
+			const accepted = await fetch(`http://${loopback}:${started.port}/bin/slingshot/agent/submit`, {
+				method: "POST",
+				headers: {
+					connection: "close",
+					"csrf-token": PLANTED_FORGERY_TOKEN,
+					referer: "http://severance-proxy/",
+				},
+			});
+			expect(accepted.status).toBe(200);
+			expect(forwarded).toBe(1);
+		} finally {
+			await started.handle.stop();
+			await new Promise<void>((resolve, reject) => {
+				upstream.close((error) => (error ? reject(error) : resolve()));
+			});
+		}
+	});
+
+	test("a capabilities GET is forwarded without a token", async () => {
+		const upstream = Bun.serve({
+			hostname: loopback,
+			port: 0,
+			fetch() {
+				return new Response("ok", { status: 200 });
+			},
+		});
+		const started = await startSeveranceProxy({
+			listenAddress: loopback,
+			listenPort: anyPort,
+			upstreamAddress: loopback,
+			upstreamPort: upstream.port!,
+			controlAddress: loopback,
+			controlPort: anyPort,
+			forgeryToken: PLANTED_FORGERY_TOKEN,
+		});
+		if (!started.ok) throw new Error(started.message);
+		try {
+			const answered = await fetch(`http://${loopback}:${started.port}/bin/slingshot/agent/capabilities`, {
+				headers: { connection: "close" },
+			});
+			expect(answered.status).toBe(200);
+			expect(await answered.text()).toBe("ok");
+		} finally {
+			await started.handle.stop();
+			upstream.stop(true);
+		}
 	});
 });

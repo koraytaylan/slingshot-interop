@@ -29,6 +29,12 @@ import type { ContainerHandle } from "../harness/container.ts";
 // nothing is established between requests and each request says what it is.
 export const protocolRevision = "2026-07-28";
 
+// The initialized era a standard MCP host speaks: Grok, Claude, and Cursor
+// send `initialize` first and then `tools/call` with no per-request revision.
+// A suite that only spoke `protocolRevision` would not notice the older era
+// answering tools/call with empty content.
+export const legacyProtocolRevision = "2025-06-18";
+
 // The two JSON-RPC codes a request this build understands can receive, and
 // the shape of an error: `-32700` is a line that is not a message at all and
 // `-32602` is a request whose arguments are unusable. A `tools/call` answered
@@ -58,6 +64,34 @@ export function requestLine(request: ProtocolRequest): string {
 // stream closed at the end — which is how the server learns to finish.
 export function requestLines(requests: readonly ProtocolRequest[]): string {
 	return requests.map((request) => `${requestLine(request)}\n`).join("");
+}
+
+// One initialized-era session: handshake, then one tools/call with no
+// protocolVersion on the call, which is what a host that already initialized
+// actually sends.
+export function legacySessionLines(call: {
+	readonly identifier: string;
+	readonly name: string;
+	readonly arguments: Record<string, unknown>;
+}): string {
+	const initialize = JSON.stringify({
+		jsonrpc: "2.0",
+		id: "init",
+		method: "initialize",
+		params: {
+			protocolVersion: legacyProtocolRevision,
+			capabilities: {},
+			clientInfo: { name: "slingshot-interop", version: "0" },
+		},
+	});
+	const initialized = JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" });
+	const toolsCall = JSON.stringify({
+		jsonrpc: "2.0",
+		id: call.identifier,
+		method: "tools/call",
+		params: { name: call.name, arguments: call.arguments },
+	});
+	return `${initialize}\n${initialized}\n${toolsCall}\n`;
 }
 
 export type AnsweredDocument = {
@@ -128,6 +162,7 @@ export function resultOf(document: AnsweredDocument): Record<string, unknown> {
 export type CataloguedTool = {
 	readonly name: string;
 	readonly inputSchema: Record<string, unknown>;
+	readonly readOnly?: boolean;
 };
 
 export function catalogOf(result: Record<string, unknown>): readonly CataloguedTool[] {
@@ -156,7 +191,13 @@ export function catalogOf(result: Record<string, unknown>): readonly CataloguedT
 		if (schema === null || typeof schema !== "object" || Array.isArray(schema)) {
 			throw new Error(`tool ${JSON.stringify(name)} carries no input schema: ${JSON.stringify(entry).slice(0, 400)}`);
 		}
-		return { name, inputSchema: schema as Record<string, unknown> };
+		const annotations = held["annotations"];
+		const readOnly =
+			annotations !== null
+			&& typeof annotations === "object"
+			&& !Array.isArray(annotations)
+			&& (annotations as Record<string, unknown>)["readOnlyHint"] === true;
+		return { name, inputSchema: schema as Record<string, unknown>, readOnly };
 	});
 }
 
@@ -244,6 +285,10 @@ export function minimalArgumentsFor(tool: CataloguedTool, key: string): Record<s
 // spelling and not a rule invented here.
 export function isControlTool(tool: CataloguedTool): boolean {
 	return tool.name.includes("-");
+}
+
+export function isReadOnlyRegistryTool(tool: CataloguedTool): boolean {
+	return !isControlTool(tool) && tool.readOnly === true;
 }
 
 export const scenario = {
@@ -359,15 +404,19 @@ export const scenario = {
 			// line reaches, and leave the effect that command declares. The
 			// control above proves the route; this proves the route carries
 			// real work.
+			const handshake = await legacyHandshake(handle, options);
+			if (!handshake.ok) {
+				return handshake;
+			}
 			const commanded = await commandCall(handle, options, machine);
 			if (!commanded.ok) {
 				return commanded;
 			}
-			// Every advertised tool, not only the two called above. The catalog
-			// is a promise about all of its entries, and the failure this
-			// catches is the one where a tool is advertised and can never be
-			// reached: a call answered with a local failure rather than with
-			// anything the daemon was asked.
+			// Every advertised read-only tool, not only the two called above.
+			// The catalog is a promise about all of its entries, and the
+			// failure this catches is the one where a tool is advertised and
+			// can never be reached: a call answered with a local failure
+			// rather than with anything the daemon was asked.
 			const swept = await sweepCatalog(handle, options, commanded.operationIdentifier);
 			if (!swept.ok) {
 				return { ok: false, message: swept.message };
@@ -375,7 +424,7 @@ export const scenario = {
 
 			return {
 				ok: true,
-				message: `the protocol server answered a ${catalog.length}-tool catalog, every tool with an input schema, ${swept.answered.length} read-only tools each answered through a call built from that tool's own declared schema (${swept.notDriven.length} needing prior work not driven here: ${swept.notDriven.join(", ")}), a real ${calledToolName} call carrying its own ${JSON.stringify(outcome)} document, and a real ${commandedToolName} call whose command ran on the agent and left ${commanded.effect}`,
+				message: `the protocol server answered a ${catalog.length}-tool catalog, every tool with an input schema, an initialized-era ${calledToolName} call carrying ${JSON.stringify(handshake.outcome)}, ${swept.answered.length} read-only tools each answered through a call built from that tool's own declared schema (${swept.notDriven.length} needing prior work not driven here: ${swept.notDriven.join(", ")}), a real ${calledToolName} call carrying its own ${JSON.stringify(outcome)} document, and a real ${commandedToolName} call whose command ran on the agent and left ${commanded.effect}`,
 			};
 		} catch (error) {
 			return { ok: false, message: error instanceof Error ? error.message : String(error) };
@@ -390,6 +439,68 @@ export const scenario = {
 // parent this scenario plants first, so nothing depends on another scenario
 // having run.
 export const commandedToolName = "create_asset_folder";
+
+export async function legacyHandshake(
+	handle: ContainerHandle,
+	options: StartClientRunnerOptions,
+): Promise<{ readonly ok: true; readonly outcome: string } | { readonly ok: false; readonly message: string }> {
+	const answered = await invoke(
+		handle,
+		[
+			runner(),
+			"--runtime-root",
+			options.runtimeRoot,
+			"--profile",
+			options.scratchHome.profileName,
+			"--environment",
+			options.scratchHome.environmentName,
+			"protocol-serve",
+		],
+		options,
+		new TextEncoder().encode(legacySessionLines({ identifier: "legacy-call", name: calledToolName, arguments: {} })),
+	);
+	if (!answered.ok) {
+		return { ok: false, message: `the initialized-era protocol-serve could not run: ${answered.message}` };
+	}
+	if (answered.exitCode !== 0) {
+		return { ok: false, message: `the initialized-era protocol-serve exited ${answered.exitCode}: ${answered.stderr}` };
+	}
+	let documents: readonly AnsweredDocument[];
+	try {
+		documents = answeredDocuments(answered.stdout);
+	} catch (error) {
+		return { ok: false, message: error instanceof Error ? error.message : String(error) };
+	}
+	let initialize: Record<string, unknown>;
+	let call: Record<string, unknown>;
+	try {
+		initialize = resultOf(answerFor(documents, "init"));
+		call = resultOf(answerFor(documents, "legacy-call"));
+	} catch (error) {
+		return { ok: false, message: `the initialized-era exchange was refused: ${error instanceof Error ? error.message : String(error)}` };
+	}
+	if (initialize["protocolVersion"] !== legacyProtocolRevision) {
+		return { ok: false, message: `initialize offered ${JSON.stringify(initialize["protocolVersion"])} rather than ${legacyProtocolRevision}` };
+	}
+	const content = call["content"];
+	if (!Array.isArray(content) || content.length === 0) {
+		return {
+			ok: false,
+			message: `the initialized-era ${calledToolName} call answered empty content: ${JSON.stringify(call).slice(0, 800)}`,
+		};
+	}
+	const carried = contentOf(content);
+	if (carried === undefined || typeof carried["outcome"] !== "string" || !answerableTags.includes(carried["outcome"])) {
+		return {
+			ok: false,
+			message: `the initialized-era ${calledToolName} call did not carry ${JSON.stringify(answerableTags)}: ${JSON.stringify(call).slice(0, 800)}`,
+		};
+	}
+	if (call["resultType"] !== undefined) {
+		return { ok: false, message: `the initialized era carried a modern result member: ${JSON.stringify(call).slice(0, 800)}` };
+	}
+	return { ok: true, outcome: carried["outcome"] };
+}
 
 // Runs the registry-command tool call and proves its command reached the agent.
 //
@@ -575,6 +686,22 @@ export function assertControlAnswer(toolName: string, result: Record<string, unk
 	}
 }
 
+export function assertReachedDaemon(tool: CataloguedTool, result: Record<string, unknown>): void {
+	if (isControlTool(tool)) {
+		assertControlAnswer(tool.name, result);
+		return;
+	}
+	const content = result["content"];
+	const carried = Array.isArray(content) ? contentOf(content) : undefined;
+	const outcome = carried?.["outcome"];
+	if (outcome === "local_application_error") {
+		throw new Error("expected a daemon answer, received local_application_error");
+	}
+	if (typeof outcome !== "string" || outcome.length === 0) {
+		throw new Error(`expected a daemon answer, received ${JSON.stringify(outcome)}`);
+	}
+}
+
 // Every read-only tool the catalog advertises, called with the arguments its own
 // schema declares, against the run's live daemon.
 //
@@ -622,7 +749,9 @@ export async function sweepCatalog(
 	}
 
 	const swept = discovered.filter(
-		(tool) => isControlTool(tool) && !controlsNeedingPriorWork.some((held) => held === tool.name),
+		(tool) =>
+			!controlsNeedingPriorWork.some((held) => held === tool.name)
+			&& (isControlTool(tool) || isReadOnlyRegistryTool(tool)),
 	);
 	const requests: readonly ProtocolRequest[] = swept.map((tool, position) => {
 		// A control that names an operation is given the one this scenario's own
@@ -684,7 +813,7 @@ export async function sweepCatalog(
 			return { ok: false, message: `${tool.name} was refused by the protocol: ${error instanceof Error ? error.message : String(error)}` };
 		}
 		try {
-			assertControlAnswer(tool.name, result);
+			assertReachedDaemon(tool, result);
 		} catch (error) {
 			invalidAnswers.push(`${tool.name}: ${error instanceof Error ? error.message : String(error)}`);
 			continue;

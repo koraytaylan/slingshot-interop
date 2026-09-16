@@ -40,6 +40,7 @@ import {
 } from "../harness/container.ts";
 import { runPodman } from "../harness/podman.ts";
 import { refuseHttpResponse } from "../harness/http-refusal.ts";
+import { PLANTED_FORGERY_TOKEN } from "../harness/forgery-protection.ts";
 import { severancePoints } from "../harness/severance-proxy.ts";
 import { readdir } from "node:fs/promises";
 import { type ReportData, type ScenarioOutcome } from "./report.ts";
@@ -261,6 +262,7 @@ export async function runInterop(
 				`SEVERANCE_CONTROL_PORT=${severanceControlPort(values)}`,
 				`SEVERANCE_UPSTREAM_HOST=${AUTHOR_RUNTIME_NAME}`,
 				`SEVERANCE_UPSTREAM_PORT=${values.ports.author}`,
+				`SEVERANCE_FORGERY_TOKEN=${PLANTED_FORGERY_TOKEN}`,
 			],
 			command: [],
 			probe: async (id, deadline) => {
