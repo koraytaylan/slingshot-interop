@@ -4,6 +4,7 @@
 import { runCleanup } from "../run/cleanup.ts";
 
 export const submissionRequestLine = "POST /bin/slingshot/agent/submit HTTP/1.1";
+export const tokenRequestLine = "GET /libs/granite/csrf/token.json HTTP/1.1";
 type ScenarioAnswer = { readonly ok: boolean; readonly message: string };
 
 export async function withProxyDisarmed(run: () => Promise<ScenarioAnswer>, disarm: () => Promise<ScenarioAnswer>): Promise<ScenarioAnswer> {
@@ -15,13 +16,17 @@ export async function withProxyDisarmed(run: () => Promise<ScenarioAnswer>, disa
 }
 
 export function observedSubmissionRefusal(value: unknown, arm: string): boolean {
+	return observedRequestRefusal(value, arm, submissionRequestLine);
+}
+
+export function observedRequestRefusal(value: unknown, arm: string, requestLine: string): boolean {
 	if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
 	const record = value as Record<string, unknown>;
 	const counts = record["statusCounts"];
 	if (counts === null || typeof counts !== "object" || Array.isArray(counts)) return false;
 	const statuses = counts as Record<string, unknown>;
 	return arm.length > 0 && record["arm"] === arm && record["mode"] === "observe"
-		&& record["requestLine"] === submissionRequestLine && record["severed"] === 0 && record["suppressedResponseBytes"] === 0
+		&& record["requestLine"] === requestLine && record["severed"] === 0 && record["suppressedResponseBytes"] === 0
 		&& typeof record["matchedRequests"] === "number" && Number.isSafeInteger(record["matchedRequests"]) && record["matchedRequests"] > 0
 		&& Object.keys(statuses).length === 1 && statuses["401"] === record["matchedRequests"];
 }

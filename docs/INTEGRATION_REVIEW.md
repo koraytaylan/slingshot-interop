@@ -2858,6 +2858,14 @@ that the supplied binaries were built from those commits.
    failed before sending; the observer was not relaxed to accept an unobserved
    exchange.
 
+151. **The authentication observer initially rejected the token route itself.**
+   The client contract says an invalid credential stops at the CSRF token GET,
+   before any submission POST. The harness now has a separate token request-line
+   predicate and admits the route's dotted `.json` suffix, with 16 real-socket
+   proxy tests and the authentication fixture suite passing. The temporary live
+   candidate run still requires one final orchestration check after this parser
+   repair; committed sibling pins remain unchanged.
+
 147. **Exact-commit orchestration exposed deeper sibling incompatibilities after parser repair.**
    With `transition_revision` admitted as validated agent metadata, the temporary
    candidate run reached all eight scenarios. Five passed; artifact transfer
