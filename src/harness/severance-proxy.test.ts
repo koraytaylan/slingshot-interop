@@ -342,7 +342,7 @@ describe("severance proxy over real sockets", () => {
 			expect((await fetch(`http://${loopback}:${proxy.controlPort}/arm/client?mode=observe&request-line=${encodeURIComponent(target)}`, { method: "POST" })).status).toBe(200);
 		} finally {
 			await proxy.stop();
-			await echo.stop();
+			await echo.close();
 		}
 	});
 

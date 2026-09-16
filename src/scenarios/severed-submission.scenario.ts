@@ -162,6 +162,12 @@ export const scenario = {
 				if (resumeReceipt.outcome !== "operation_resume_receipt" || resumeReceipt.category !== parked.envelope.category || (resumeReceipt as Record<string, unknown>)["replayed"] !== false) {
 					return { ok: false, message: `recovery restart did not acknowledge the first guarded resume: ${JSON.stringify(resumeReceipt)}` };
 				}
+				// Resume only re-queues the durable row; explicitly converge the
+				// daemon so its scheduler claims the newly eligible operation.
+				const restarted = await invoke(handle, [runner(), ...machine, "daemon", "start"], options);
+				if (!restarted.ok || restarted.exitCode !== 0) {
+					return { ok: false, message: `daemon convergence after guarded resume failed: ${restarted.ok ? restarted.stderr : restarted.message}` };
+				}
 				const waited = await waitForRecoveredResult(handle, machine, operationIdentifier, options);
 				if (!waited.ok) return waited;
 				recovered = waited;
