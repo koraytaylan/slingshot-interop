@@ -13,7 +13,7 @@ import { readBoundedJson } from "../harness/bounded-json.ts";
 import { envelope, invoke, machineArguments, runner, waitTerminal } from "./support.ts";
 import { agentOperationInventory } from "./agent-operation-inventory.ts";
 import { severanceControlPort } from "../run/orchestration.ts";
-import { observedSubmissionRefusal, submissionRequestLine, withProxyDisarmed } from "./proxy-observation.ts";
+import { observedRequestRefusal, tokenRequestLine, withProxyDisarmed } from "./proxy-observation.ts";
 import { serializeProfile, sha256OfBytes, serializeSnapshot, profileDirectoryName, profileFileNameSuffix, configurationSnapshotFileName, selectionFileName, type SnapshotSource } from "../sides/client-configuration.ts";
 import { join } from "node:path";
 import type { StartClientRunnerOptions } from "../sides/client-runtime.ts";
@@ -60,7 +60,7 @@ export const scenario = {
 		if (!before.ok) return before;
 		const control = `http://127.0.0.1:${severanceControlPort(options.values)}`;
 		return withProxyDisarmed(async () => {
-			const armed = await fetch(`${control}/arm/client?mode=observe&request-line=${encodeURIComponent(submissionRequestLine)}`, { method: "POST", signal: AbortSignal.timeout(10_000), redirect: "error" });
+			const armed = await fetch(`${control}/arm/client?mode=observe&request-line=${encodeURIComponent(tokenRequestLine)}`, { method: "POST", signal: AbortSignal.timeout(10_000), redirect: "error" });
 			if (armed.status !== 200) return { ok: false, message: `proxy observation could not arm: ${armed.status}` };
 			const arm = armed.headers.get("x-severance-arm");
 			if (!arm) return { ok: false, message: "proxy observation returned no arming identity" };
@@ -118,8 +118,8 @@ export const scenario = {
 			const observation = await fetch(`${control}/observed/client`, { signal: AbortSignal.timeout(10_000), redirect: "error" });
 			const captured = await readBoundedJson(observation, options.values.capture.maximumBytes);
 			if (!captured.ok) return { ok: false, message: `proxy observation: ${captured.message}` };
-			if (!observedSubmissionRefusal(captured.value, arm)) {
-				return { ok: false, message: "proxy did not witness only 401 responses for the matched submission POST requests" };
+			if (!observedRequestRefusal(captured.value, arm, tokenRequestLine)) {
+				return { ok: false, message: "proxy did not witness only 401 responses for the matched token GET requests" };
 			}
 
 			// Missing client acknowledgement is not evidence of absent admission.
@@ -129,7 +129,7 @@ export const scenario = {
 			if (JSON.stringify(after.operations) !== JSON.stringify(before.operations)) {
 				return { ok: false, message: "the agent's logical-operation inventory changed during the authentication-refused exchange" };
 			}
-			return { ok: true, message: "authentication refusal: proxy observed submission POST 401 responses, client retained its unresolved submission, and independent agent operation inventory is unchanged" };
+			return { ok: true, message: "authentication refusal: proxy observed token GET 401 responses, client retained its unresolved submission, and independent agent operation inventory is unchanged" };
 		}, async () => {
 			const response = await fetch(`${control}/disarm/client`, { method: "POST", signal: AbortSignal.timeout(10_000), redirect: "error" });
 			return { ok: response.status === 200, message: `proxy observation disarm: ${response.status}` };

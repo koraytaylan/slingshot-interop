@@ -168,7 +168,7 @@ export async function startSeveranceProxy(options: SeveranceProxyOptions): Promi
 			const mode = params.get("mode") ?? "immediate";
 			const requestLine = params.get("request-line");
 			if ([...params.keys()].some(key => !["mode", "threshold", "request-line"].includes(key) || params.getAll(key).length !== 1)
-				|| (requestLine !== null && (!["response", "observe"].includes(mode) || threshold !== 0 || !/^(GET|POST) \/[A-Za-z0-9/_-]+ HTTP\/1\.1$/.test(requestLine) || requestLine.length > 1024))
+				|| (requestLine !== null && (!["response", "observe"].includes(mode) || threshold !== 0 || !/^(GET|POST) \/[A-Za-z0-9._/-]+ HTTP\/1\.1$/.test(requestLine) || requestLine.length > 1024))
 				|| (mode === "observe" && requestLine === null)
 				|| !/^(0|[1-9][0-9]*)$/.test(writtenThreshold) || !validArmOptions(mode, threshold)) {
 				return new Response("invalid severance options: require a declared mode and nonnegative safe-integer threshold\n", { status: 400 });

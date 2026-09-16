@@ -2,7 +2,7 @@
 // Copyright 2026 Koray Taylan Davgana
 
 import { expect, test } from "bun:test";
-import { observedSubmissionRefusal, submissionRequestLine } from "./proxy-observation.ts";
+import { observedSubmissionRefusal, submissionRequestLine, tokenRequestLine } from "./proxy-observation.ts";
 
 test("authentication evidence requires only matched 401s from this arming", () => {
 	const valid = { arm: "current", mode: "observe", requestLine: submissionRequestLine,
@@ -30,13 +30,13 @@ test.each(["refused", "no-status", "changed-inventory", "arm-throws", "submissio
 			const path = new URL(url).pathname; events.push(path);
 			if (path === "/arm/client" && mode === "arm-throws") throw new Error("arm lost");
 			if (path === "/observed/client" && ["duplicate-status", "oversized-status"].includes(mode)) {
-				const evidence = JSON.stringify({ arm: "current", mode: "observe", requestLine: ${JSON.stringify(submissionRequestLine)}, severed: 0,
+					const evidence = JSON.stringify({ arm: "current", mode: "observe", requestLine: ${JSON.stringify(tokenRequestLine)}, severed: 0,
 					suppressedResponseBytes: 0, matchedRequests: 1, statusCounts: { "401": 1 } });
 				const body = mode === "duplicate-status" ? '{"statusCounts":{"500":1},' + evidence.slice(1) : " ".repeat(1025) + evidence;
 				return new Response(body, { headers: { "content-type": "application/json" } });
 			}
 			if (path === "/observed/client") return Response.json({ arm: "current", mode: "observe",
-				requestLine: ${JSON.stringify(submissionRequestLine)}, severed: 0, suppressedResponseBytes: 0,
+				requestLine: ${JSON.stringify(tokenRequestLine)}, severed: 0, suppressedResponseBytes: 0,
 				matchedRequests: 1, statusCounts: mode === "no-status" ? {} : { "401": 1 } });
 			return new Response("", { status: path === "/disarm/client" && mode === "disarm-fails" ? 500 : 200, headers: { "x-severance-arm": "current" } });
 		};

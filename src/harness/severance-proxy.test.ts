@@ -334,6 +334,18 @@ describe("severance proxy over real sockets", () => {
 		expect(await (await fetch(`http://${loopback}:${proxy.controlPort}/observed/client`)).json()).toMatchObject({ severed: 0 });
 	});
 
+	test("request targeting admits a dotted token route", async () => {
+		const echo = await startEcho();
+		const proxy = await startProxy(echo.port);
+		const target = "GET /libs/granite/csrf/token.json HTTP/1.1";
+		try {
+			expect((await fetch(`http://${loopback}:${proxy.controlPort}/arm/client?mode=observe&request-line=${encodeURIComponent(target)}`, { method: "POST" })).status).toBe(200);
+		} finally {
+			await proxy.stop();
+			await echo.stop();
+		}
+	});
+
 	test("invalid control options are refused without arming any relay", async () => {
 		const echo = await startEcho();
 		const proxy = await startProxy(echo.port);
