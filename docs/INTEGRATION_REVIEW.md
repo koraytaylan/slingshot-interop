@@ -3290,3 +3290,10 @@ that the supplied binaries were built from those commits.
   MCP, and write/read passed. Severed submission remains a genuine integration
   failure: its first guarded resume returned `operation_resume_receipt` with
   `category=queued`, `replayed=false`, rather than acknowledging the resume.
+- Latest exact-candidate rerun after source-policy cleanup: client commit
+  `1b2061a4e1d73f3ff3c323dbac8561b463f5a467`, candidate SHA-256
+  `1707b4586aae6aaab4730e3e569676d16e92952c49db881146b775a2c0179f15`, and
+  the unchanged acknowledged agent candidate passed all 8/8 scenarios with
+  clean teardown. The source-policy gate now reports 302 remaining findings;
+  the cleanup removed five naming/documentation findings without changing
+  policy semantics.
