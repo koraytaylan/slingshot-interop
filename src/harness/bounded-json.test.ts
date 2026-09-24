@@ -2,13 +2,14 @@
 // Copyright 2026 Koray Taylan Davgana
 
 import { expect, test } from "bun:test";
-import { characterVisits, parseUniqueJson } from "./bounded-json.ts";
+import { parseUniqueJson, stringBytesCopied } from "./bounded-json.ts";
 
-test("a long string is accepted in one pass and keeps its characters", () => {
+test("a long string value is not copied again while member names are checked", () => {
 	const body = "b".repeat(20_000);
 	const text = `{"body":"${body}"}`;
 	expect(parseUniqueJson(text)).toEqual({ body });
-	expect(characterVisits()).toBe(text.length);
+	expect(stringBytesCopied()).toBeLessThan(body.length);
+	expect(stringBytesCopied()).toBe('"body"'.length);
 });
 
 test("duplicate members are refused and escaped keys stay distinct", () => {

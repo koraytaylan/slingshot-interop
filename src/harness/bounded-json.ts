@@ -38,37 +38,35 @@ export async function readBoundedJson(response: Response, maximumBytes: number):
 	}
 }
 
-// How many UTF-16 code units the last parseUniqueJson call examined.
-// One visit per unit is a single pass. The previous matcher copied each
-// string token, and a long string was examined far more expensively than once.
-let recordedVisits = 0;
+// UTF-16 code units copied into a string token by the last parseUniqueJson call.
+// The native parse builds the value either way. This counts the extra token
+// copy: a matcher that materializes every string, including a long value.
+let recordedStringBytes = 0;
 
-export function characterVisits(): number {
-	return recordedVisits;
+export function stringBytesCopied(): number {
+	return recordedStringBytes;
+}
+
+function copiedToken(token: string): string {
+	recordedStringBytes += token.length;
+	return token;
 }
 
 export function parseUniqueJson(text: string): unknown {
 	// Let the native parser establish valid JSON syntax first. Then inspect
 	// complete string tokens, so escaped punctuation cannot affect object scope.
 	const value: unknown = JSON.parse(text);
+	recordedStringBytes = 0;
 	const scopes: ({ keys: Set<string>; expectsKey: boolean } | null)[] = [];
 	let index = 0;
-	let visits = 0;
 	while (index < text.length) {
 		const character = text[index];
 		if (character === '"') {
 			const start = index;
-			visits += 1;
 			index += 1;
 			while (index < text.length) {
-				visits += 1;
 				if (text[index] === "\\") {
-					if (index + 1 < text.length) {
-						visits += 1;
-						index += 2;
-						continue;
-					}
-					index += 1;
+					index += index + 1 < text.length ? 2 : 1;
 					continue;
 				}
 				if (text[index] === '"') {
@@ -79,14 +77,13 @@ export function parseUniqueJson(text: string): unknown {
 			}
 			const scope = scopes.at(-1);
 			if (scope?.expectsKey) {
-				const key = JSON.parse(text.slice(start, index)) as string;
+				const key = JSON.parse(copiedToken(text.slice(start, index))) as string;
 				if (scope.keys.has(key)) throw new Error("duplicate JSON member");
 				scope.keys.add(key);
 				scope.expectsKey = false;
 			}
 			continue;
 		}
-		visits += 1;
 		index += 1;
 		if (character === "{") {
 			scopes.push({ keys: new Set(), expectsKey: true });
@@ -105,6 +102,5 @@ export function parseUniqueJson(text: string): unknown {
 			if (scope) scope.expectsKey = true;
 		}
 	}
-	recordedVisits = visits;
 	return value;
 }
