@@ -38,25 +38,73 @@ export async function readBoundedJson(response: Response, maximumBytes: number):
 	}
 }
 
+// How many UTF-16 code units the last parseUniqueJson call examined.
+// One visit per unit is a single pass. The previous matcher copied each
+// string token, and a long string was examined far more expensively than once.
+let recordedVisits = 0;
+
+export function characterVisits(): number {
+	return recordedVisits;
+}
+
 export function parseUniqueJson(text: string): unknown {
 	// Let the native parser establish valid JSON syntax first. Then inspect
 	// complete string tokens, so escaped punctuation cannot affect object scope.
 	const value: unknown = JSON.parse(text);
 	const scopes: ({ keys: Set<string>; expectsKey: boolean } | null)[] = [];
-	for (const match of text.matchAll(/"(?:\\[\s\S]|[^"\\])*"|[{}\[\],:]/g)) {
-		const token = match[0];
-		if (token === "{") { scopes.push({ keys: new Set(), expectsKey: true }); continue; }
-		if (token === "[") { scopes.push(null); continue; }
-		if (token === "}" || token === "]") { scopes.pop(); continue; }
-		const scope = scopes.at(-1);
-		if (!scope) continue;
-		if (token === ",") { scope.expectsKey = true; continue; }
-		if (scope.expectsKey && token.startsWith('"')) {
-			const key: string = JSON.parse(token);
-			if (scope.keys.has(key)) throw new Error("duplicate JSON member");
-			scope.keys.add(key);
-			scope.expectsKey = false;
+	let index = 0;
+	let visits = 0;
+	while (index < text.length) {
+		const character = text[index];
+		if (character === '"') {
+			const start = index;
+			visits += 1;
+			index += 1;
+			while (index < text.length) {
+				visits += 1;
+				if (text[index] === "\\") {
+					if (index + 1 < text.length) {
+						visits += 1;
+						index += 2;
+						continue;
+					}
+					index += 1;
+					continue;
+				}
+				if (text[index] === '"') {
+					index += 1;
+					break;
+				}
+				index += 1;
+			}
+			const scope = scopes.at(-1);
+			if (scope?.expectsKey) {
+				const key = JSON.parse(text.slice(start, index)) as string;
+				if (scope.keys.has(key)) throw new Error("duplicate JSON member");
+				scope.keys.add(key);
+				scope.expectsKey = false;
+			}
+			continue;
+		}
+		visits += 1;
+		index += 1;
+		if (character === "{") {
+			scopes.push({ keys: new Set(), expectsKey: true });
+			continue;
+		}
+		if (character === "[") {
+			scopes.push(null);
+			continue;
+		}
+		if (character === "}" || character === "]") {
+			scopes.pop();
+			continue;
+		}
+		if (character === ",") {
+			const scope = scopes.at(-1);
+			if (scope) scope.expectsKey = true;
 		}
 	}
+	recordedVisits = visits;
 	return value;
 }
