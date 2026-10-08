@@ -14,7 +14,7 @@ function resources() {
 	const hash = "a".repeat(64);
 	return [
 		{ name: `${base}commands/index.txt`, value: "query_paths.toml\n" },
-		{ name: `${base}commands/query_paths.toml`, value: `[command]\nwire_name="query_paths"\ncontract_version="2.0.0"\ncontract_limits_digest="${hash}"\nargument_schema_digest="${hash}"\nresult_schema_digest="${hash}"\n` },
+		{ name: `${base}commands/query_paths.toml`, value: `[command]\nwire_name="query_paths"\ncontract_version="0.0.0"\ncontract_limits_digest="${hash}"\nargument_schema_digest="${hash}"\nresult_schema_digest="${hash}"\n` },
 		{ name: `${base}contract/command-contract.sha256`, value: hash },
 		{ name: `${base}contract/transport-contract.sha256`, value: hash },
 		{ name: `${base}contract/command-canonical-json-1.json`, value: "{}\n" },

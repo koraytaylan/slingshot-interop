@@ -10,13 +10,13 @@ test("fixture exceeds its reviewed built-contract budget", () => {
 	expect(plantedNodes).toBeGreaterThan(candidateBound);
 	const identity = { command_wire_name: "list_components", command_semantic_contract_version: "0.0.0", command_contract_limits_digest: discoveryLimitsDigest };
 	expect(() => requireReviewedDiscoveryBudget({ command_contracts: [identity] })).not.toThrow();
-	for (const command_contracts of [[], [identity, identity], [{ ...identity, command_contract_limits_digest: "a".repeat(64) }], [{ ...identity, command_semantic_contract_version: "0.0.0" }]]) expect(() => requireReviewedDiscoveryBudget({ command_contracts })).toThrow();
+	for (const command_contracts of [[], [identity, identity], [{ ...identity, command_contract_limits_digest: "a".repeat(64) }], [{ ...identity, command_semantic_contract_version: "0.0.0+another-build" }]]) expect(() => requireReviewedDiscoveryBudget({ command_contracts })).toThrow();
 });
 
 test("query discovery requires its own reviewed version two identity", () => {
 	const identity = { command_wire_name: "query_paths", command_semantic_contract_version: "0.0.0", command_contract_limits_digest: discoveryLimitsDigest };
 	expect(() => requireReviewedDiscoveryBudget({ command_contracts: [identity] }, "query_paths")).not.toThrow();
-	for (const command_contracts of [[], [{ ...identity, command_wire_name: "list_components" }], [identity, identity], [{ ...identity, command_semantic_contract_version: "0.0.0" }]]) expect(() => requireReviewedDiscoveryBudget({ command_contracts }, "query_paths")).toThrow();
+	for (const command_contracts of [[], [{ ...identity, command_wire_name: "list_components" }], [identity, identity], [{ ...identity, command_semantic_contract_version: "0.0.0+another-build" }]]) expect(() => requireReviewedDiscoveryBudget({ command_contracts }, "query_paths")).toThrow();
 });
 
 test("query pages enumerate provider order with addresses only and unchanged page bounds", () => {
