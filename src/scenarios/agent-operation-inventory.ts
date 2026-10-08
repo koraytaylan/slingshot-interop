@@ -46,13 +46,47 @@ export function parseOperationInventory(value: unknown): Inventory {
 
 export async function agentOperationInventory(port: number, maximumBytes: number): Promise<Inventory> {
 	try {
-		const response = await fetch(`http://127.0.0.1:${port}/var/slingshot-agent/operations.4.json`, {
-			headers: { authorization: agentAuthorization("admin", "admin") },
-			redirect: "error", signal: AbortSignal.timeout(10_000),
-		});
-		const captured = await readBoundedJson(response, maximumBytes);
-		if (!captured.ok) return { ok: false, message: `agent admission inventory: ${captured.message}` };
-		return parseOperationInventory(captured.value);
+		const base = `http://127.0.0.1:${port}/var/slingshot-agent/operations`;
+		const request = { headers: { authorization: agentAuthorization("admin", "admin") },
+			redirect: "error" as const, signal: AbortSignal.timeout(10_000) };
+		const response = await fetch(`${base}.4.json`, request);
+		if (response.status !== 300) {
+			const captured = await readBoundedJson(response, maximumBytes);
+			if (!captured.ok) return { ok: false, message: `agent admission inventory: ${captured.message}` };
+			return parseOperationInventory(captured.value);
+		}
+		await response.body?.cancel();
+		let remaining = maximumBytes;
+		const read = async (path: string): Promise<Record<string, unknown>> => {
+			const response = await fetch(path, request);
+			let bytes = 0;
+			const body = response.body?.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+				transform(chunk, controller) { bytes += chunk.byteLength; controller.enqueue(chunk); },
+			}));
+			const captured = await readBoundedJson(new Response(body, { status: response.status, headers: response.headers }), remaining);
+			remaining -= bytes;
+			if (!captured.ok) throw new Error(captured.message);
+			if (captured.value === null || typeof captured.value !== "object" || Array.isArray(captured.value)) throw new Error("inventory node is not an object");
+			return captured.value as Record<string, unknown>;
+		};
+		const shallow = await read(`${base}.2.json`);
+		const validated = parseOperationInventory(shallow);
+		if (!validated.ok) return validated;
+		const original = JSON.stringify(shallow);
+		for (const [generation, value] of Object.entries(shallow)) {
+			if (value === null || typeof value !== "object" || Array.isArray(value)) continue;
+			const folders = value as Record<string, unknown>;
+			for (const [bucket, value] of Object.entries(folders)) {
+				if (value === null || typeof value !== "object" || Array.isArray(value)) continue;
+				const complete = await read(`${base}/${generation}/${bucket}.2.json`);
+				for (const [name, property] of Object.entries(value)) {
+					if (JSON.stringify(complete[name]) !== JSON.stringify(property)) throw new Error("bucket readbacks disagree");
+				}
+				folders[bucket] = complete;
+			}
+		}
+		if (JSON.stringify(await read(`${base}.2.json`)) !== original) throw new Error("inventory generation or bucket topology changed during capture");
+		return parseOperationInventory(shallow);
 	} catch (failure) {
 		return { ok: false, message: `agent admission inventory could not be read: ${failure instanceof Error ? failure.message : String(failure)}` };
 	}

@@ -25,9 +25,9 @@ export type StartContainerOptions = {
 	// another side must reach is named by its name in a profile or an
 	// environment, so each of those carries one.
 	readonly name?: string;
-	// The container ports to publish, mapped as-is to the same host port. The
-	// caller declares the ports it needs and no other port is published.
-	readonly publish?: readonly number[];
+	// Numbers publish the same port on host and container; explicit mappings
+	// keep internal addresses stable while isolating host-side observations.
+	readonly publish?: readonly (number | { readonly host: number; readonly container: number })[];
 	// The environment the container is started with, one KEY=VALUE per
 	// entry, each passed to Podman as its own -e argument.
 	readonly env?: readonly string[];
@@ -197,7 +197,9 @@ export async function startContainer(
 		runArgs.push("--name", options.name);
 	}
 	for (const port of options.publish ?? []) {
-		runArgs.push("-p", `${port}:${port}`);
+		const host = typeof port === "number" ? port : port.host;
+		const container = typeof port === "number" ? port : port.container;
+		runArgs.push("-p", `${host}:${container}`);
 	}
 	for (const entry of options.env ?? []) {
 		runArgs.push("-e", entry);
@@ -222,7 +224,7 @@ export async function startContainer(
 		labelKey: options.labelKey,
 		labelValue: options.labelValue,
 		network: options.network,
-		publishedPorts: [...(options.publish ?? [])],
+		publishedPorts: (options.publish ?? []).map(port => typeof port === "number" ? port : port.host),
 		captureLogs: (deadline) => captureLogs(id, options, deadline),
 	// Stopping with SIGTERM is the orderly path, but this Podman's rootless
 	// netns teardown fails with "permission denied" after a stop on a custom

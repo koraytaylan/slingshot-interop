@@ -22,7 +22,11 @@ async function execute(): Promise<number> {
 		return { identifier: `${image.name}@${image.identifier}` };
 	}
 
+	const hostPort = process.env["SLINGSHOT_INTEROP_AUTHOR_HOST_PORT"];
+	const fixtureReceipt = process.env["SLINGSHOT_INTEROP_WORKFLOW_FIXTURE"];
 	const options = {
+		...(fixtureReceipt === undefined ? {} : { workflowFixtureReceipt: fixtureReceipt }),
+		...(hostPort === undefined ? {} : { authorHostPort: /^\d+$/.test(hostPort) ? Number(hostPort) : Number.NaN }),
 		images: {
 			"tier-sling": imageIdentifier("tier-sling"),
 			"client-runner": imageIdentifier("client-runner"),

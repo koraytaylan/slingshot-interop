@@ -63,7 +63,7 @@ test.each(["automatic", "guarded", "wrong-result", "no-cut", "wrong-target", "st
 			invoke: async (_handle, command) => {
 				events.push(command);
 				const receipt = command.includes("operation-restart") ? { outcome: "operation_resume_receipt", category: "ambiguous_submission", replayed: false }
-					: { outcome: "operation_receipt", operation_identifier: "original-operation" };
+					: { outcome: "operation_receipt", operation_identifier: "fixture-severed" };
 				return { ok: true, exitCode: 0, stdout: JSON.stringify(receipt), stderr: "" };
 			},
 			envelope: stdout => ({ ...JSON.parse(stdout), ok: true }),
@@ -99,11 +99,11 @@ test.each(["automatic", "guarded", "wrong-result", "no-cut", "wrong-target", "st
 	expect(events.at(-1)).toBe("/disarm/client");
 	const commands = events.filter(Array.isArray) as string[][];
 	expect(commands.filter(command => command.includes("create_asset_folder"))).toHaveLength(1);
-	for (const command of commands.filter(command => command[0] === "wait" || command[0] === "resolve")) expect(command[1]).toBe("original-operation");
+	for (const command of commands.filter(command => command[0] === "wait" || command[0] === "resolve")) expect(command[1]).toBe("fixture-severed");
 	const restarts = commands.filter(command => command.includes("operation-restart"));
 	expect(restarts).toHaveLength(mode === "guarded" || mode === "still-parked" ? 1 : 0);
 	if (mode === "guarded") {
-		expect(restarts[0]).toEqual(["runner", "operation-restart", "--operation", "original-operation", "--expected-revision", "3", "--expected-category", "ambiguous_submission"]);
+		expect(restarts[0]).toEqual(["runner", "operation-restart", "--operation", "fixture-severed", "--expected-revision", "3", "--expected-category", "ambiguous_submission"]);
 		expect(events.indexOf("/disarm/client")).toBeLessThan(events.indexOf(restarts[0]));
 	}
 });

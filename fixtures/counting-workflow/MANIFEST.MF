@@ -1,0 +1,10 @@
+Manifest-Version: 1.0
+Bundle-ManifestVersion: 2
+Bundle-SymbolicName: rs.slingshot.interop.counting-workflow
+Bundle-Version: 1.0.0
+Bundle-Name: Slingshot interop non-idempotent workflow fixture
+Bundle-Activator: rs.slingshot.interop.fixture.CountingWorkflow
+Sling-Nodetypes: SLING-INF/interop-pages.cnd;reregister:=false
+Import-Package: org.osgi.framework;version="[1.8,2)",
+ org.apache.sling.api.resource;version="[2.0,3)",
+ rs.slingshot.agent.command.platform;version="[0.0,1)"

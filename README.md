@@ -6,10 +6,11 @@ This repository is the standalone gate that both siblings' release checklists re
 
 The harness proves that the exact bytes named in the pinning documents produce the observed results. It refuses to run if the bytes on disk do not match the recorded digests, if a candidate is not acknowledged by its holder, or if a commit pin is not a 40-hex object name.
 
-## The Two Commands
+## Preparing and running
 
-1. `scripts/prepare_interop_images`: The only command that reaches the network. It pulls digest-pinned base images and builds the harness runtimes.
-2. `bun run interop`: The run command. It resolves the sides, starts the containers, executes all scenarios, and produces a report.
+1. `scripts/prepare_candidates CLIENT_SOURCE AGENT_SOURCE DURABLE_DESTINATION`: Build immutable candidate artifacts offline from truthful source snapshots; see [preparation instructions](scripts/README.md#prepare-changed-siblings-for-review). It emits proposed pins for holder review.
+2. `scripts/prepare_interop_images`: The only command that reaches the network. It pulls digest-pinned base images and builds the harness runtimes.
+3. `bun run interop`: The run command. It resolves the sides, starts the containers, executes all scenarios, and produces a report.
 
 **What you see while it runs:** a run takes minutes. It says each step on **standard error** as it happens — resolving the sides, starting each runtime, each scenario as it begins and how it went, teardown — and every fifteen seconds that a long wait is still waiting, naming what for. The **report** is the only thing on standard output, written once when the run has finished, so redirecting stdout gives you the report alone:
 
@@ -52,3 +53,11 @@ Proves a candidate against the other sibling's released pinning.
 Proves both candidates together.
 - **Owner steps:** Record bytes, digests, and 40-hex commits for both candidates in their respective TOML files, and set `candidate.acknowledged = true` for both.
 - **Command:** `bun run interop`
+
+## Host port isolation
+
+If another local service owns the declared author port, set
+`SLINGSHOT_INTEROP_AUTHOR_HOST_PORT` to an available port from 1 through 65535.
+The report records both ports. Only host observations and the publication use
+the override; client profiles and proxy forwarding keep the author container's
+internal port. The harness does not stop unrelated listeners.

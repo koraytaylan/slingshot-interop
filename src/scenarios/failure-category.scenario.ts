@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright 2026 Koray Taylan Davgana
 
+import { submittedOperation } from "./submission.ts";
 // The failure-category scenario: a command that fails on the agent has to
 // surface through the client as the failure the agent declared, never as a
 // transport error, and never as the client's own reclassification. What the
@@ -10,7 +11,7 @@
 // exactly this, and the runtime carries no such template, so the failure is
 // deterministic without planting anything.
 
-import { agentSnapshot, envelope, invoke, machineArguments, resolveAgentOperationIdentifier, runner, waitTerminal } from "./support.ts";
+import { agentSnapshot, invoke, machineArguments, resolveAgentOperationIdentifier, runner, waitTerminal } from "./support.ts";
 import type { StartClientRunnerOptions } from "../sides/client-runtime.ts";
 import type { ContainerHandle } from "../harness/container.ts";
 import { parseUniqueJson } from "../harness/bounded-json.ts";
@@ -46,16 +47,8 @@ export const scenario = {
 		if (!submitted.ok) {
 			return { ok: false, message: `the failing submission could not run: ${submitted.message}` };
 		}
-		if (submitted.exitCode !== 0) {
-			return { ok: false, message: `the failing submission exited ${submitted.exitCode}: ${submitted.stderr}` };
-		}
-		const receipt = envelope(submitted.stdout, "create_page");
-		if (receipt.ok === false) {
-			return receipt;
-		}
-		if (receipt.outcome !== "operation_receipt") {
-			return { ok: false, message: `the failing submission answered ${String(receipt.outcome)} instead of a receipt: ${submitted.stdout}` };
-		}
+		const receipt = submittedOperation(submitted, `${options.labelValue}-failure`);
+		if (!receipt.ok) return receipt;
 		const operationIdentifier = receipt.operation_identifier;
 		if (typeof operationIdentifier !== "string" || operationIdentifier.length === 0) {
 			return { ok: false, message: `the failing submission named no operation: ${submitted.stdout}` };

@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -118,7 +118,14 @@ describe("readSideDocument", () => {
 				continue;
 			}
 			const resolution = resolveSide(name, document, process.cwd());
-			const actualDigest = digestOf(resolve(process.cwd(), document.candidate.path));
+			const candidatePath = resolve(process.cwd(), document.candidate.path);
+			if (!existsSync(candidatePath)) {
+				expect("refused" in resolution).toBe(true);
+				if (!("refused" in resolution)) throw new Error(`${name} accepted missing bytes`);
+				expect(resolution.refused.kind).toBe("bytes-absent");
+				continue;
+			}
+			const actualDigest = digestOf(candidatePath);
 			if (actualDigest === document.candidate.digest) {
 				expect("resolved" in resolution).toBe(true);
 				if (!("resolved" in resolution)) throw new Error(`${name} did not resolve`);

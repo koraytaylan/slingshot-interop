@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright 2026 Koray Taylan Davgana
 
+import { submittedOperation } from "./submission.ts";
+import { authorHostPort } from "../sides/author-host-port.ts";
+
 // The authentication-refusal scenario: credentials the author refuses have
 // to be reported as what they are — an outcome the client cannot settle —
 // never as a clean success or a fabricated failure. A second profile
@@ -10,7 +13,7 @@
 
 import { chmod } from "node:fs/promises";
 import { readBoundedJson } from "../harness/bounded-json.ts";
-import { envelope, invoke, machineArguments, runner, waitTerminal } from "./support.ts";
+import { invoke, machineArguments, runner, waitTerminal } from "./support.ts";
 import { agentOperationInventory } from "./agent-operation-inventory.ts";
 import { severanceControlPort } from "../run/orchestration.ts";
 import { observedRequestRefusal, authenticationRequestLine, withProxyDisarmed } from "./proxy-observation.ts";
@@ -56,7 +59,7 @@ export const scenario = {
 			return { ok: false, message: `daemon start exited ${started.exitCode}: ${started.stderr}` };
 		}
 
-		const before = await agentOperationInventory(options.values.ports.author, options.values.capture.maximumBytes);
+		const before = await agentOperationInventory(authorHostPort(options), options.values.capture.maximumBytes);
 		if (!before.ok) return before;
 		const control = `http://127.0.0.1:${severanceControlPort(options.values)}`;
 		return withProxyDisarmed(async () => {
@@ -73,48 +76,22 @@ export const scenario = {
 			if (!submitted.ok) {
 				return { ok: false, message: `the refused submission could not run: ${submitted.message}` };
 			}
-			if (submitted.exitCode !== 0) {
-				return { ok: false, message: `the refused submission exited ${submitted.exitCode}: ${submitted.stderr}` };
-			}
-
-			// 2. The submission itself answers with its receipt: a 401 from the
-			// author is a validated POST whose outcome the client cannot settle,
-			// so the operation exists and is reported by its identifier, exactly
-			// as an accepted submission is. The refusal is what the operation
-			// then ends as.
-			const receipt = envelope(submitted.stdout, "load_content_as_json under the refused profile");
-			if (receipt.ok === false) {
-				return receipt;
-			}
-			if ((receipt as Record<string, unknown>)['outcome'] !== "operation_receipt") {
-				return { ok: false, message: `the refused submission answered ${String((receipt as Record<string, unknown>)['outcome'])} instead of a receipt: ${submitted.stdout}` };
-			}
-			const operationIdentifier = (receipt as Record<string, unknown>)['operation_identifier'];
+			const receipt = submittedOperation(submitted, `${options.labelValue}-refused`);
+			if (!receipt.ok) return receipt;
+			const operationIdentifier = receipt.operation_identifier;
 			if (typeof operationIdentifier !== "string" || operationIdentifier.length === 0) {
 				return { ok: false, message: `the refused submission named no operation: ${submitted.stdout}` };
 			}
 
-			// 3. The operation ends in the client's own recovery state: the
-			// lookup the daemon performs to reconcile the uncertain submission
-			// is refused under the same wrong credentials, so the operation
-			// parks as recovery_required naming the ambiguous submission — the
-			// one disposition that never invents a result the author did not
-			// give.
-			const ended = await waitTerminal(handle, machine, operationIdentifier, options, options.values.readiness.harnessSeconds * 1000);
-			if (!ended.ok) {
-				return ended;
-			}
-			if ((ended.envelope as Record<string, unknown>)['outcome'] !== "operation_recovery_required") {
-				return { ok: false, message: `the refused submission ended as ${String((ended.envelope as Record<string, unknown>)['outcome'])} instead of the unresolved recovery state: ${JSON.stringify(ended.envelope)}` };
-			}
-			const category = typeof (ended.envelope as Record<string, unknown>)['category'] === "string" ? String((ended.envelope as Record<string, unknown>)['category']) : undefined;
-			if (category !== "ambiguous_submission") {
-				return { ok: false, message: `the unresolved recovery named ${JSON.stringify(category)} instead of the ambiguous submission it is: ${JSON.stringify(ended.envelope)}` };
-			}
-			const evidence = typeof (ended.envelope as Record<string, unknown>)['evidence'] === "string" ? String((ended.envelope as Record<string, unknown>)['evidence']) : "";
-			if (!evidence.includes("SubmissionUnknown")) {
-				return { ok: false, message: `the unresolved recovery's evidence does not name the submission as unknown: ${JSON.stringify(ended.envelope)}` };
-			}
+            // A capability refusal happens before submission. Require the durable
+            // non-execution disposition, then prove the actual HTTP refusal and
+            // unchanged agent inventory independently below.
+            const ended = await waitTerminal(handle, machine, operationIdentifier, options, options.values.readiness.harnessSeconds * 1000);
+            if (!ended.ok) return ended;
+            if (ended.envelope.outcome !== "operation_terminal_error"
+                || (ended.envelope as Record<string, unknown>)["disposition"] !== "AuthoritativeNonExecution { certainty: ConfirmedNotExecuted }") {
+                return { ok: false, message: `authentication refusal did not establish non-execution: ${JSON.stringify(ended.envelope)}` };
+            }
 			const observation = await fetch(`${control}/observed/client`, { signal: AbortSignal.timeout(10_000), redirect: "error" });
 			const captured = await readBoundedJson(observation, options.values.capture.maximumBytes);
 			if (!captured.ok) return { ok: false, message: `proxy observation: ${captured.message}` };
@@ -124,12 +101,12 @@ export const scenario = {
 
 			// Missing client acknowledgement is not evidence of absent admission.
 			// Require an unchanged independent inventory in this isolated test author.
-			const after = await agentOperationInventory(options.values.ports.author, options.values.capture.maximumBytes);
+			const after = await agentOperationInventory(authorHostPort(options), options.values.capture.maximumBytes);
 			if (!after.ok) return after;
 			if (JSON.stringify(after.operations) !== JSON.stringify(before.operations)) {
 				return { ok: false, message: "the agent's logical-operation inventory changed during the authentication-refused exchange" };
 			}
-			return { ok: true, message: "authentication refusal: proxy observed capability GET 401 responses, client retained its unresolved submission, and independent agent operation inventory is unchanged" };
+			return { ok: true, message: "authentication refusal: proxy observed capability GET 401 responses, client retained confirmed non-execution, and independent agent operation inventory is unchanged" };
 		}, async () => {
 			const response = await fetch(`${control}/disarm/client`, { method: "POST", signal: AbortSignal.timeout(10_000), redirect: "error" });
 			return { ok: response.status === 200, message: `proxy observation disarm: ${response.status}` };

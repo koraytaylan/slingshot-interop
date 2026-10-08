@@ -29,6 +29,12 @@ import type { ScratchHome } from "./client-configuration.ts";
 // The runner image, verified offline by support/interop-images.toml. The
 // caller passes the verified identifier.
 export type StartClientRunnerOptions = {
+	readonly workflowFixtureReceipt?: string;
+	// The exact resolved agent candidate, for independent embedded-registry inspection.
+	readonly agentBundlePath?: string;
+	readonly agentBundleDigest?: string;
+	// Only host-side observations use this port; container profiles keep the internal port.
+	readonly authorHostPort?: number;
 	readonly image: string;
 	readonly values: Values;
 	readonly network: string;

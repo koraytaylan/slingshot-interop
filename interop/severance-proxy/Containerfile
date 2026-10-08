@@ -6,7 +6,7 @@
 # in support/interop-images.toml, which is the one place their references are
 # named; nothing here restates them.
 
-FROM docker.io/library/debian@sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867
+FROM docker.io/library/debian@sha256:f324c7ff54321e8d9c588493a20244965938ce0aa50bbd1022d38010e9ffc4b1
 
 # The pinned Bun binary, copied from the preparation context: the same bytes
 # scripts/verify_tooling checks against the pinned digest, so the proxy runs

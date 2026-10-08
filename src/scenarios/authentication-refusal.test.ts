@@ -48,9 +48,9 @@ test.each(["refused", "no-status", "changed-inventory", "arm-throws", "submissio
 			invoke: async (_handle, command) => {
 				events.push(command);
 				if (command.includes("load_content_as_json") && mode === "submission-throws") throw new Error("submission lost");
-				return { ok: true, exitCode: 0, stderr: "", stdout: JSON.stringify({ outcome: "operation_receipt", operation_identifier: "original" }) };
-			}, envelope: stdout => JSON.parse(stdout),
-			waitTerminal: async () => ({ ok: true, envelope: { outcome: "operation_recovery_required", category: "ambiguous_submission", evidence: "SubmissionUnknown" } }),
+				return { ok: true, exitCode: 0, stderr: "", stdout: JSON.stringify({ outcome: "operation_receipt", operation_identifier: "fixture-refused" }) };
+			}, envelope: stdout => ({ ok: true, ...JSON.parse(stdout) }),
+			waitTerminal: async () => ({ ok: true, envelope: { outcome: "operation_terminal_error", disposition: "AuthoritativeNonExecution { certainty: ConfirmedNotExecuted }", kind: "Rejected" } }),
 		}));
 		try {
 			await mkdir(join(root, profileDirectoryName));

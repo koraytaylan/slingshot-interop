@@ -6,10 +6,12 @@ import { expect, test } from "bun:test";
 test.each(["client", "container"].flatMap(kind => ["run-stalled", "probe-stalled", "cleanup-stalled", "remove-stalled", "log-preserved"].map(mode => [kind, mode])))("%s startup bounds host work and preserves cleanup evidence: %s", async (kind, mode) => {
 	const source = `
 		import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
+		import { tmpdir } from "node:os";
+		import { join } from "node:path";
 		import { startClientRunner } from ${JSON.stringify(new URL("./client-runtime.ts", import.meta.url).pathname)};
 		import { startContainer } from ${JSON.stringify(new URL("../harness/container.ts", import.meta.url).pathname)};
 		import { runPodman } from ${JSON.stringify(new URL("../harness/podman.ts", import.meta.url).pathname)};
-		const directory = await mkdtemp("/tmp/client-startup-deadline-");
+		const directory = await mkdtemp(join(tmpdir(), "client-startup-deadline-"));
 		const callsPath = directory + "/calls";
 		const mode = ${JSON.stringify(mode)};
 		const executable = directory + "/engine";

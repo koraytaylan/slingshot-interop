@@ -17,6 +17,7 @@
     "quality": "scripts/quality",
     "interop": "scripts/interop",
     "smoke": "scripts/smoke",
+    "prepare:candidates": "scripts/prepare_candidates",
     "prepare:tooling": "scripts/prepare_tooling",
     "verify:tooling": "scripts/verify_tooling",
     "prepare:locked-dependency-cache": "scripts/prepare_locked_dependency_cache",

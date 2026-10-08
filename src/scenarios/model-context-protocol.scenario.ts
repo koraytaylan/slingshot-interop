@@ -18,6 +18,8 @@
 // file owns is thin: it writes those lines to the server's input and reads
 // what the server wrote back.
 
+import { parseUniqueJson } from "../harness/bounded-json.ts";
+import { authorHostPort } from "../sides/author-host-port.ts";
 import { agentAuthorization, invoke, machineArguments, runner, waitTerminal } from "./support.ts";
 import { verifyCreatedFolder } from "./created-folder.ts";
 import { refuseHttpResponse } from "../harness/http-refusal.ts";
@@ -113,7 +115,7 @@ export function answeredDocuments(stdout: string): readonly AnsweredDocument[] {
 		}
 		let parsed: unknown;
 		try {
-			parsed = JSON.parse(trimmed);
+			parsed = parseUniqueJson(trimmed);
 		} catch {
 			throw new Error(`the protocol server wrote a line that is not a JSON document: ${trimmed.slice(0, 400)}`);
 		}
@@ -252,6 +254,10 @@ export function minimalValueFor(member: string, schema: Record<string, unknown>)
 				return "/content";
 			}
 			switch (member) {
+				case "primary_node_type":
+					return "nt:unstructured";
+				case "request_address":
+					return "/content";
 				case "media_type":
 					return "text/plain";
 				case "encoded_content":
@@ -277,6 +283,17 @@ export function minimalArgumentsFor(tool: CataloguedTool, key: string): Record<s
 		built[member] = member === "operation_key" ? key : minimalValueFor(member, properties[member] ?? { type: "string" });
 	}
 	return built;
+}
+
+// Reachability probes share a small owned repository tree, including commands
+// whose anchor is named path or request_address instead of root_path.
+export function probeArgumentsFor(tool: CataloguedTool, key: string, operationIdentifier: string, root: string): Record<string, unknown> {
+	const carried = minimalArgumentsFor(tool, key);
+	for (const member of ["root_path", "path", "request_address"]) {
+		if (member in carried) carried[member] = root;
+	}
+	if ("operation_identifier" in carried) carried["operation_identifier"] = operationIdentifier;
+	return carried;
 }
 
 // Whether one tool is a control rather than a registry command. The two are
@@ -516,7 +533,7 @@ export async function commandCall(
 	const parent = `/content/interop/${options.labelValue}/protocol`;
 	const folderName = "from-protocol";
 	const title = `Made over the protocol by ${options.labelValue}`;
-	const planted = await fetch(`http://127.0.0.1:${options.values.ports.author}${parent}`, {
+	const planted = await fetch(`http://127.0.0.1:${authorHostPort(options)}${parent}`, {
 		method: "POST",
 		headers: { authorization: agentAuthorization("admin", "admin") },
 		body: new URLSearchParams({ "sling:resourceType": "nt:unstructured" }),
@@ -582,10 +599,10 @@ export async function commandCall(
 	if (carried === undefined) {
 		return { ok: false, message: `the ${commandedToolName} call answered no structured result: ${JSON.stringify(call).slice(0, 800)}` };
 	}
-	if (carried["outcome"] !== "operation_receipt") {
+	if (carried["outcome"] !== "operation_receipt" && carried["outcome"] !== "operation_result") {
 		return { ok: false, message: `the ${commandedToolName} call answered ${JSON.stringify(carried["outcome"])} instead of a receipt: ${JSON.stringify(carried).slice(0, 800)}` };
 	}
-	const operationIdentifier = carried["operation_identifier"];
+	const operationIdentifier = carried["outcome"] === "operation_result" ? `${options.labelValue}-protocol` : carried["operation_identifier"];
 	if (typeof operationIdentifier !== "string" || operationIdentifier.length === 0) {
 		return { ok: false, message: `the ${commandedToolName} call named no operation: ${JSON.stringify(carried).slice(0, 800)}` };
 	}
@@ -607,7 +624,7 @@ export async function commandCall(
 	// And it reached the agent: the folder the call declared answers on the
 	// agent's own route with the title the call declared. A call that never
 	// left the daemon could not have made one.
-	const made = await fetch(`http://127.0.0.1:${options.values.ports.author}${parent}/${folderName}.json`, {
+	const made = await fetch(`http://127.0.0.1:${authorHostPort(options)}${parent}/${folderName}.json`, {
 		headers: { authorization: agentAuthorization("admin", "admin") },
 		redirect: "error",
 		signal: AbortSignal.timeout(10_000),
@@ -758,45 +775,33 @@ export async function sweepCatalog(
 		// command call produced, so the daemon answers about a real operation
 		// rather than about an invented name. Everything else the schema
 		// requires comes from the schema itself.
-		const carried = minimalArgumentsFor(tool, `${options.labelValue}-sweep-${position}`);
-		for (const member of Object.keys(carried)) {
-			if (member === "operation_identifier") {
-				carried[member] = operationIdentifier;
-			}
-		}
+		const carried = probeArgumentsFor(tool, `${options.labelValue}-sweep-${position}`,
+			operationIdentifier, `/content/interop/${options.labelValue}/protocol`);
 		return {
 			identifier: `sweep-${position}`,
 			method: "tools/call",
 			parameters: { name: tool.name, arguments: carried },
 		};
 	});
-	const answered = await invoke(
-		handle,
-		[
-			runner(),
-			"--runtime-root",
-			options.runtimeRoot,
-			"--profile",
-			options.scratchHome.profileName,
-			"--environment",
-			options.scratchHome.environmentName,
-			"protocol-serve",
-		],
-		options,
-		new TextEncoder().encode(requestLines(requests)),
-	);
-	if (!answered.ok) {
-		return { ok: false, message: `the sweep exchange could not run: ${answered.message}` };
-	}
-	if (answered.exitCode !== 0) {
-		return { ok: false, message: `the sweep exchange exited ${answered.exitCode}: ${answered.stderr}` };
-	}
-	let answers: readonly AnsweredDocument[];
-	try {
-		answers = answeredDocuments(answered.stdout);
-	} catch (error) {
-		return { ok: false, message: error instanceof Error ? error.message : String(error) };
-	}
+    // Respect the server's bounded worker capacity. Each completed exchange
+    // releases its worker before the next catalogue entry is exercised.
+    const answers: AnsweredDocument[] = [];
+    let sweepDiagnostics = "";
+    for (const request of requests) {
+        const answered = await invoke(handle, [runner(), "--runtime-root", options.runtimeRoot,
+            "--profile", options.scratchHome.profileName, "--environment", options.scratchHome.environmentName, "protocol-serve"],
+            options, new TextEncoder().encode(requestLines([request])));
+        if (!answered.ok) return { ok: false, message: answered.message };
+        if (answered.exitCode !== 0) return { ok: false, message: `sweep exchange exited ${answered.exitCode}: ${answered.stderr}` };
+        try {
+            const documents = answeredDocuments(answered.stdout);
+            answerFor(documents, request.identifier);
+            answers.push(...documents);
+        } catch (error) {
+            return { ok: false, message: `${String(request.parameters["name"])}: ${error instanceof Error ? error.message : String(error)}; stderr: ${answered.stderr.slice(0, 1200)}` };
+        }
+        sweepDiagnostics = (sweepDiagnostics + answered.stderr).slice(0, 1200);
+    }
 
 	// A call that reached the daemon is answered by it: what comes back names
 	// something about an operation rather than a local failure, which is what
@@ -823,7 +828,7 @@ export async function sweepCatalog(
 	if (invalidAnswers.length > 0) {
 		return {
 			ok: false,
-			message: `${invalidAnswers.length} of the ${swept.length} read-only controls returned missing, malformed or unexpected outcomes: ${invalidAnswers.join(", ")}; stderr: ${answered.stderr.trim().slice(0, 1200)}`,
+			message: `${invalidAnswers.length} of the ${swept.length} read-only controls returned missing, malformed or unexpected outcomes: ${invalidAnswers.join(", ")}; stderr: ${sweepDiagnostics}`,
 		};
 	}
 	return { ok: true, answered: answeredNames, notDriven: [...controlsNeedingPriorWork] };

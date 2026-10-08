@@ -64,3 +64,58 @@ test("missing, truncated, malformed, and misbucketed inventories cannot prove ab
 		expect(parseOperationInventory(value).ok).toBe(false);
 	}
 });
+
+const inventoryRoot = "/var/slingshot-agent/operations";
+const shallowInventory = node({ g1: node({ aa: node() }) });
+const completeBucket = node({ bb: node({ [identifier]: node({ state: "succeeded" }) }) });
+
+test("a rendering-limit refusal reads every bucket without relaxing the complete inventory", async () => {
+	const paths: string[] = [];
+	const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+		const path = new URL(request.url).pathname;
+		paths.push(path);
+		if (request.headers.get("authorization") !== `Basic ${Buffer.from("admin:admin").toString("base64")}`) return new Response("", { status: 401 });
+		if (path === `${inventoryRoot}.4.json`) return Response.json([0, 1, 2], { status: 300 });
+		if (path === `${inventoryRoot}.2.json`) return Response.json(shallowInventory);
+		if (path === `${inventoryRoot}/g1/aa.2.json`) return Response.json(completeBucket);
+		return new Response("", { status: 404 });
+	} });
+	try {
+		expect(await agentOperationInventory(server.port!, 1024)).toEqual({ ok: true, operations: [`g1/aa/bb/${identifier}`] });
+		expect(paths).toEqual([`${inventoryRoot}.4.json`, `${inventoryRoot}.2.json`, `${inventoryRoot}/g1/aa.2.json`, `${inventoryRoot}.2.json`]);
+	} finally { await server.stop(true); }
+});
+
+test("partitioned inventory refuses missing or changed buckets and topology", async () => {
+	let mode = "missing-operation-type";
+	let rootReads = 0;
+	const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+		const path = new URL(request.url).pathname;
+		if (path === `${inventoryRoot}.4.json`) return Response.json([], { status: 300 });
+		if (path === `${inventoryRoot}.2.json`) return Response.json(++rootReads === 2 && mode === "changed-topology" ? node() : shallowInventory);
+		if (mode === "missing-bucket") return new Response("", { status: 404 });
+		if (mode === "changed-bucket") return Response.json({ ...completeBucket, "jcr:primaryType": "sling:Folder" });
+		if (mode === "missing-operation-type") return Response.json(node({ bb: node({ [identifier]: {} }) }));
+		return Response.json(completeBucket);
+	} });
+	try {
+		for (mode of ["missing-operation-type", "missing-bucket", "changed-bucket", "changed-topology"]) {
+			rootReads = 0;
+			expect((await agentOperationInventory(server.port!, 1024)).ok).toBe(false);
+		}
+	} finally { await server.stop(true); }
+});
+
+test("partitioned inventory retains the original aggregate capture byte budget", async () => {
+	const rootBytes = Buffer.byteLength(JSON.stringify(shallowInventory));
+	const bucketBytes = Buffer.byteLength(JSON.stringify(completeBucket));
+	const bound = Math.max(rootBytes, bucketBytes) + 1;
+	expect(rootBytes + bucketBytes).toBeGreaterThan(bound);
+	const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+		const path = new URL(request.url).pathname;
+		if (path === `${inventoryRoot}.4.json`) return Response.json([], { status: 300 });
+		return Response.json(path === `${inventoryRoot}.2.json` ? shallowInventory : completeBucket);
+	} });
+	try { expect((await agentOperationInventory(server.port!, bound)).ok).toBe(false); }
+	finally { await server.stop(true); }
+});

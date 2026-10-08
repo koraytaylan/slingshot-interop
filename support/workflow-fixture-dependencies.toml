@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright 2026 Koray Taylan Davgana
+
+# Compile-only API jars, copied from an explicitly supplied prepared Maven cache.
+# These exact bytes also appear in the agent's locked dependency cache inventory.
+# They are never packaged inside the fixture and are never downloaded here.
+[[dependency]]
+name = "sling-api.jar"
+path = "org/apache/sling/org.apache.sling.api/2.27.6/org.apache.sling.api-2.27.6.jar"
+digest = "c8a54ce2a45bb5870b7c5e868103ec6b0aeecbfeea1725f8a4b793fdb5e047e5"
+
+[[dependency]]
+name = "osgi-framework.jar"
+path = "org/osgi/org.osgi.framework/1.10.0/org.osgi.framework-1.10.0.jar"
+digest = "e00700b2c07a68d6f70a7b42bd29d599bbe76bd11e96a34b61e4de45a98ab1be"

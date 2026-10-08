@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright 2026 Koray Taylan Davgana
 
+import { submittedOperation } from "./submission.ts";
+import { authorHostPort } from "../sides/author-host-port.ts";
+
 // The severed-submission scenario: the answer to a submission never comes
 // back. The client retains a receipt and parks unresolved while the harness
 // checks the agent's completed operation and resulting content. This scenario
@@ -68,7 +71,7 @@ export const scenario = {
 		if (started.exitCode !== 0) {
 			return { ok: false, message: `daemon start exited ${started.exitCode}: ${started.stderr}` };
 		}
-		const before = await agentOperationInventory(options.values.ports.author, options.values.capture.maximumBytes);
+		const before = await agentOperationInventory(authorHostPort(options), options.values.capture.maximumBytes);
 		if (!before.ok) return before;
 
 		// 2. Submit a write through the proxy, arming the client-side
@@ -98,22 +101,8 @@ export const scenario = {
 			if (!submitted.ok) {
 				return { ok: false, message: `the severed submission could not run: ${submitted.message}` };
 			}
-			if (submitted.exitCode !== 0) {
-				return { ok: false, message: `the severed submission exited ${submitted.exitCode}: ${submitted.stderr}` };
-			}
-
-			// 3. The submission answers with its receipt: the daemon retains the
-			// operation before the remote exchange, so the answer it can prove
-			// at that moment is exactly what an accepted submission answers —
-			// never a success for the work itself, whose outcome is the one
-			// thing the severed transport cannot carry back.
-			const receipt = envelope(submitted.stdout, "the severed submission");
-			if (receipt.ok === false) {
-				return receipt;
-			}
-			if (receipt.outcome !== "operation_receipt") {
-				return { ok: false, message: `the severed submission answered ${String(receipt.outcome)} instead of a receipt: ${submitted.stdout}` };
-			}
+			const receipt = submittedOperation(submitted, operationKey);
+			if (!receipt.ok) return receipt;
 			const operationIdentifier = receipt.operation_identifier;
 			if (typeof operationIdentifier !== "string" || operationIdentifier.length === 0) {
 				return { ok: false, message: `the severed submission named no operation: ${submitted.stdout}` };
@@ -190,7 +179,7 @@ export const scenario = {
 			}
 			const verifiedResult = verifyCreatedFolderResult(recovered.envelope.result, snapshot.terminal_result, folderPath);
 			if (!verifiedResult.ok) return verifiedResult;
-			const after = await agentOperationInventory(options.values.ports.author, options.values.capture.maximumBytes);
+			const after = await agentOperationInventory(authorHostPort(options), options.values.capture.maximumBytes);
 			if (!after.ok) return after;
 			const prior = new Set(before.operations);
 			const current = new Set(after.operations);
@@ -204,7 +193,7 @@ export const scenario = {
 			// the platform's own 403 — it has no default renderer for a node that
 			// is not a page — and what proves the write is the document the
 			// platform renders for it.
-			const content = await fetch(`http://127.0.0.1:${options.values.ports.author}${folderPath}.json`, {
+			const content = await fetch(`http://127.0.0.1:${authorHostPort(options)}${folderPath}.json`, {
 				redirect: "error",
 				headers: { authorization: agentAuthorization("admin", "admin") },
 				signal: AbortSignal.timeout(10_000),

@@ -11,6 +11,7 @@
 // a template a sibling scenario already planted in the same run is the
 // outcome this helper needs, so an existing node is verified, not replanted.
 
+import { authorHostPort } from "../sides/author-host-port.ts";
 import { agentAuthorization } from "./support.ts";
 import type { StartClientRunnerOptions } from "../sides/client-runtime.ts";
 import type { ContainerHandle } from "../harness/container.ts";
@@ -23,7 +24,7 @@ export async function plantTemplate(_handle: ContainerHandle, options: StartClie
 	// Already there? A sibling scenario may have planted it earlier in the
 	// same run: the runtime is one Sling repository shared by every
 	// scenario.
-	const existing = await fetch(`http://127.0.0.1:${options.values.ports.author}${templatePath}`, {
+	const existing = await fetch(`http://127.0.0.1:${authorHostPort(options)}${templatePath}`, {
 		headers,
 		signal: AbortSignal.timeout(30_000),
 	});
@@ -34,7 +35,7 @@ export async function plantTemplate(_handle: ContainerHandle, options: StartClie
 		return { ok: false, message: `reading the scenario template answered ${existing.status} ${existing.statusText}` };
 	}
 
-	const planting = await fetch(`http://127.0.0.1:${options.values.ports.author}${templatePath}`, {
+	const planting = await fetch(`http://127.0.0.1:${authorHostPort(options)}${templatePath}`, {
 		method: "POST",
 		headers,
 		body: new URLSearchParams({ "jcr:primaryType": "cq:Template" }),

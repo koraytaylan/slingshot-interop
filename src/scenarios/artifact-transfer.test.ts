@@ -65,8 +65,8 @@ test.each([
 		if (mode in invalidLengths) descriptor.byte_length = invalidLengths[mode];
 		const entry = { artifact_identifier: mode === "wrong-identifier" ? "other" : "local-artifact",
 			author_target_identity_digest: targetDigest,
-			uri: "slingshot://profiles/fixture/environments/fixture/targets/" + targetDigest + "/operations/operation/artifacts/local-artifact",
-			operation_identifier: mode === "wrong-operation" ? "other" : "operation",
+			uri: "slingshot://profiles/fixture/environments/fixture/targets/" + targetDigest + "/operations/fixture-artifact/artifacts/local-artifact",
+			operation_identifier: mode === "wrong-operation" ? "other" : "fixture-artifact",
 			byte_length: mode === "string-length" ? String(length) : length,
 			content_digest: mode === "wrong-digest" ? "0".repeat(64) : digest, media_type: "application/json" };
 		if (mode === "wrong-access-media") entry.media_type = "application/zip";
@@ -85,7 +85,7 @@ test.each([
 		if (mode === "mixed-result") result.document = resource;
 		mock.module(${JSON.stringify(new URL("./support.ts", import.meta.url).pathname)}, () => ({
 			runner: () => "runner", machineArguments: () => [], agentAuthorization: () => "",
-			envelope: stdout => JSON.parse(stdout),
+			envelope: stdout => ({ ok: true, ...JSON.parse(stdout) }),
 			resolveLocalArtifactIdentifier: async () => {
 				if (mode === "identifier-over-limit" || mode in invalidLengths) throw new Error("invalid descriptor reached artifact resolution");
 				return { ok: true, artifactIdentifier: "local-artifact", targetDigest };
@@ -97,7 +97,7 @@ test.each([
 				if (command.includes("load_content_as_json")) {
 					loadCalls += 1;
 					if (mode === "planting-body-cancelled" && !plantingBodyCancelled) throw new Error("planting body was left open");
-					stdout = JSON.stringify({ outcome: "operation_receipt", operation_identifier: "operation" });
+					stdout = JSON.stringify({ outcome: "operation_receipt", operation_identifier: "fixture-artifact" });
 				}
 				if (command.includes("operation-artifact")) stdout = JSON.stringify({ outcome: "structured_result_artifact_access", artifact: entry });
 				if (command[0] === "sh") {

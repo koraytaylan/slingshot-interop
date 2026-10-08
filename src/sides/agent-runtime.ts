@@ -45,6 +45,8 @@ export type StartSlingRuntimeOptions = {
 	// host, which is the only base a real run uses; the stub-server test names
 	// its own server instead of a port.
 	readonly consoleBase?: string;
+	// Host publication may differ from the fixed port inside the author image.
+	readonly authorHostPort?: number;
 	readonly captureDirectory?: string;
 	readonly executable?: string;
 	// Where each step of bringing the author up is reported.
@@ -447,7 +449,7 @@ export async function awaitActive(
 export async function startSlingRuntime(
 	options: StartSlingRuntimeOptions,
 ): Promise<StartSlingRuntimeOutcome> {
-	const port = options.values.ports.author;
+	const port = options.authorHostPort ?? options.values.ports.author;
 	// One reporter for the whole sequence, so the heartbeat always repeats
 	// whichever step is current rather than the first one. Every exit from this
 	// function is inside the `finally`, because a heartbeat left running after a
@@ -468,14 +470,14 @@ async function startSlingRuntimePhases(
 	phase: PhaseReporter,
 ): Promise<StartSlingRuntimeOutcome> {
 	phase.begin("waiting for the author container's console route");
-	// Exactly one port for the harness: the author's, mapped as-is.
+	// Exactly one publication; the internal author address stays unchanged.
 	const started = await startContainer({
 		image: options.image,
 		labelKey: options.values.label.key,
 		labelValue: options.labelValue,
 		network: options.network,
 		name: AUTHOR_RUNTIME_NAME,
-		publish: [port],
+		publish: [{ host: port, container: options.values.ports.author }],
 		command: [],
 		probe: () => consoleAnswers(port, options),
 		probeIntervalSeconds: options.values.readiness.pollIntervalSeconds,

@@ -1,0 +1,17 @@
+#!/usr/bin/env bun
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright 2026 Koray Taylan Davgana
+
+import { prepareCandidates } from "../src/preparation/candidates.ts";
+
+const arguments_ = process.argv.slice(2);
+if (arguments_.length !== 3) {
+	console.error("usage: scripts/prepare_candidates CLIENT_SOURCE AGENT_SOURCE DURABLE_DESTINATION");
+	process.exit(2);
+}
+try {
+	console.log(await prepareCandidates(arguments_[0]!, arguments_[1]!, arguments_[2]!));
+} catch (failure) {
+	console.error(failure instanceof Error ? failure.message : String(failure));
+	process.exit(1);
+}

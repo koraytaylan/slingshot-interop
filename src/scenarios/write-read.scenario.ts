@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright 2026 Koray Taylan Davgana
 
+import { submittedOperation } from "./submission.ts";
 // The write-then-read scenario: one asset folder created through the
 // client's own command surface, waited to its terminal disposition, then
 // the same path loaded back as content with the write's declaration
@@ -10,7 +11,7 @@
 // registers, so what this scenario proves is the real round trip, not a
 // planting.
 
-import { agentSnapshot, envelope, invoke, machineArguments, resolveAgentOperationIdentifier, runner, waitTerminal } from "./support.ts";
+import { agentSnapshot, invoke, machineArguments, resolveAgentOperationIdentifier, runner, waitTerminal } from "./support.ts";
 import type { StartClientRunnerOptions } from "../sides/client-runtime.ts";
 import type { ContainerHandle } from "../harness/container.ts";
 import { verifyCreatedFolderResult } from "./created-folder.ts";
@@ -44,16 +45,8 @@ export const scenario = {
 		if (!created.ok) {
 			return { ok: false, message: `create_asset_folder could not run: ${created.message}` };
 		}
-		if (created.exitCode !== 0) {
-			return { ok: false, message: `create_asset_folder exited ${created.exitCode}: ${created.stderr}` };
-		}
-		const receipt = envelope(created.stdout, "create_asset_folder");
-		if (receipt.ok === false) {
-			return receipt;
-		}
-		if (receipt.outcome !== "operation_receipt") {
-			return { ok: false, message: `create_asset_folder answered ${String(receipt.outcome)} instead of a receipt: ${created.stdout}` };
-		}
+		const receipt = submittedOperation(created, `${options.labelValue}-write-read`);
+		if (!receipt.ok) return receipt;
 		const operationIdentifier = receipt.operation_identifier;
 		if (typeof operationIdentifier !== "string" || operationIdentifier.length === 0) {
 			return { ok: false, message: `create_asset_folder named no operation: ${created.stdout}` };
@@ -74,13 +67,7 @@ export const scenario = {
 			return { ok: false, message: `the create answered ${JSON.stringify(result)} where the command's target is ${folderPath}` };
 		}
 
-		// 3. Load the same path back and assert the read's answer carries
-		// what the write declared. A submission is answered with its receipt
-		// — the client's own contract is that a machine render writes exactly
-		// one envelope, and a submission's envelope is the acknowledgement of
-		// work taken rather than the work's answer — so the operation is then
-		// waited to its terminal disposition, which is where the result
-		// arrives.
+		// 3. Load the same path and observe its durable answer.
 		const loaded = await invoke(handle, [
 			runner(), ...machine, "load_content_as_json",
 			"--operation-key", `${options.labelValue}-write-read-read`,
@@ -90,21 +77,10 @@ export const scenario = {
 		if (!loaded.ok) {
 			return { ok: false, message: `load_content_as_json could not run: ${loaded.message}` };
 		}
-		if (loaded.exitCode !== 0) {
-			return { ok: false, message: `load_content_as_json exited ${loaded.exitCode}: ${loaded.stderr}` };
-		}
-		const submitted = envelope(loaded.stdout, "load_content_as_json");
-		if (submitted.ok === false) {
-			return submitted;
-		}
-		if (submitted.outcome !== "operation_receipt") {
-			return { ok: false, message: `load_content_as_json answered ${String(submitted.outcome)} instead of its receipt: ${loaded.stdout}` };
-		}
-		const readOperation = submitted.operation_identifier;
-		if (typeof readOperation !== "string" || readOperation.length === 0) {
-			return { ok: false, message: `load_content_as_json named no operation: ${loaded.stdout}` };
-		}
-		const read = await waitTerminal(handle, machine, readOperation, options, waitBudget(options));
+		const submitted = submittedOperation(loaded, `${options.labelValue}-write-read-read`);
+        if (!submitted.ok) return submitted;
+        const readOperation = submitted.operation_identifier;
+        const read = await waitTerminal(handle, machine, readOperation, options, waitBudget(options));
 		if (!read.ok) {
 			return read;
 		}

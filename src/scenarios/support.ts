@@ -7,6 +7,7 @@
 // does not offer: every option and envelope tag is spelled as the client's
 // own sources spell it.
 
+import { authorHostPort } from "../sides/author-host-port.ts";
 import { readDaemonDatabase } from "./daemon-database.ts";
 import { join } from "node:path";
 import { execInContainer, parseMachineEnvelope, runnerExecutablePath, type ExecResult, type MachineEnvelope, type StartClientRunnerOptions } from "../sides/client-runtime.ts";
@@ -225,7 +226,7 @@ export async function agentSnapshot(
 ): Promise<{ readonly ok: true; readonly snapshot: AgentSnapshot } | { readonly ok: false; readonly message: string }> {
 	try {
 		const response = await fetch(
-			`http://127.0.0.1:${options.values.ports.author}/bin/slingshot/agent/snapshot?agent_operation_identifier=${encodeURIComponent(agentOperationIdentifier)}`,
+			`http://127.0.0.1:${authorHostPort(options)}/bin/slingshot/agent/snapshot?agent_operation_identifier=${encodeURIComponent(agentOperationIdentifier)}`,
 			{ redirect: "error", headers: { authorization: agentAuthorization("admin", "admin") }, signal: AbortSignal.timeout(10_000) },
 		);
 		return await readAgentSnapshot(response, agentOperationIdentifier, options.values.capture.maximumBytes, expectedTargetDigest);

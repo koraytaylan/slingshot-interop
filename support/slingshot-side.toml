@@ -37,16 +37,16 @@ digest = ""
 # Reason: the candidate bundle under the supplied-inputs directory, built in
 # this side's own verified environment and placed by its holder; empty until
 # a holder supplies candidate bytes.
-path = "/tmp/interop-candidate-reviewed/slingshot-x86_64-unknown-linux-gnu.tar.gz"
+path = "/home/koraytaylan/Workspace/slingshot/.effectiveness-candidates/artifacts/e0101944f00c83378df9724c020316f5d4f06151be105ea39b68c7c8f10b974d/slingshot-linux-x64.tar.gz"
 
 # Reason: the digest of the candidate bytes as the holder built them, so a
 # run proves the bytes on disk are the bytes the holder acknowledged; empty
 # until a holder supplies candidate bytes.
-digest = "e28230df4b1dbd2f29733fdfd8a73a0ff6e8041749779658dbb854f5da2d6d4e"
+digest = "e0101944f00c83378df9724c020316f5d4f06151be105ea39b68c7c8f10b974d"
 
 # Reason: the exact commit the candidate was built from, so every result
 # names the source it was about; empty until a holder supplies a candidate.
-commit = "fba262b764c61500539109b408308f7dbb8f6d01"
+commit = "03df48173b906890a74446566d23801e8f93e5cb"
 
 # Reason: the holder's acknowledgement that these candidate bytes were built
 # in the sibling's own verified environment; only the holder sets it, and a

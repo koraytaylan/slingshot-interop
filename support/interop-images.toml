@@ -22,7 +22,7 @@ tag = "pinned"
 # the build and is explicitly absent until then, like a released slot: the
 # gate refuses an absent build by naming the preparation command, and this
 # file stays the one place the built image is named.
-identifier = "sha256:f9cc75bd927165d5004d56ac5b569b8c03fab0a100551690d98d7a886838ad6f"
+identifier = "sha256:1fee91ce0cf482a86dc15e60c0786ea2777c6d6f4b599906052af1278b416701"
 
 [tier-sling]
 name = "localhost/slingshot-interop-tier-sling"
@@ -31,7 +31,7 @@ tag = "pinned"
 # the build and is explicitly absent until then, like a released slot: the
 # gate refuses an absent build by naming the preparation command, and this
 # file stays the one place the built image is named.
-identifier = "sha256:a3be64b4e918351dd602223280ebaf0dc0d7223ad32f4260311eb64a829d7321"
+identifier = "sha256:f75ea76ff42fce967ad03cad217d85be4d8ff5fd369aacaf22e87b06389c24c2"
 
 # [severance-proxy] records the disruption half's built image: the pinned
 # glibc base carrying the pinned Bun binary and the proxy's own source. The
@@ -44,7 +44,7 @@ tag = "pinned"
 # the build and is explicitly absent until then, like a released slot: the
 # gate refuses an absent build by naming the preparation command, and this
 # file stays the one place the built image is named.
-identifier = "sha256:54201f403c9c081f10e639b099348f2ed1a20b2e2740b705fa1505a4539af8c7"
+identifier = "sha256:27eaa899cc1aaaa11fb8c5dc4ba02413617d9de5b2a23b8eb4d3b2d765a0c98a"
 
 [probe]
 

@@ -118,6 +118,8 @@ export async function runInterop(
 			readonly "severance-proxy": { readonly identifier: string };
 		};
 		readonly executable?: string;
+		readonly authorHostPort?: number;
+		readonly workflowFixtureReceipt?: string;
 		// Where the run says what it is doing while it does it. A caller that
 		// supplies nothing gets silence, so a run under test prints nothing of
 		// its own and a run in a terminal says each step as it happens.
@@ -125,6 +127,7 @@ export async function runInterop(
 	},
 ): Promise<OrchestrationOutcome> {
 	const values = readValues(join(baseDirectory, "support/harness-values.toml"));
+	if (options.authorHostPort !== undefined && (!Number.isInteger(options.authorHostPort) || options.authorHostPort < 1 || options.authorHostPort > 65535)) throw new Error("author host port must be an integer from 1 to 65535");
 	const labelValue = `run-${crypto.randomUUID()}`;
 	const networkName = `net-${labelValue}`;
 	const report = options.progress ?? silentProgress;
@@ -161,6 +164,7 @@ export async function runInterop(
 	let agentConfiguration: ReportData["agentConfiguration"];
 	const data = (): ReportData => ({
 		label: labelValue, sides: { slingshot, agent },
+		ports: { authorHost: options.authorHostPort ?? values.ports.author, authorContainer: values.ports.author },
 		images: Object.fromEntries(Object.entries(options.images).map(([name, image]) => [name, {
 			identifier: image.identifier, digest: image.identifier.split("@").at(-1)!,
 		}])),
@@ -217,6 +221,7 @@ export async function runInterop(
 		const authorStartedAt = Date.now();
 		const authorRuntime = await startSlingRuntime({
 			configurationObserved: inputs => { agentConfiguration = inputs; },
+			...(options.authorHostPort === undefined ? {} : { authorHostPort: options.authorHostPort }),
 			image: options.images["tier-sling"].identifier,
 			values,
 			network: network.name,
@@ -326,6 +331,10 @@ export async function runInterop(
 			() =>
 				startClientRunner({
 					image: options.images["client-runner"].identifier,
+					agentBundlePath: agent.path,
+					agentBundleDigest: agent.digest,
+					...(options.workflowFixtureReceipt === undefined ? {} : { workflowFixtureReceipt: options.workflowFixtureReceipt }),
+					...(options.authorHostPort === undefined ? {} : { authorHostPort: options.authorHostPort }),
 					values,
 					network: network.name,
 					labelValue,
@@ -364,6 +373,10 @@ export async function runInterop(
 				clientRunner.handle,
 				{
 					image: options.images["client-runner"].identifier,
+					agentBundlePath: agent.path,
+					agentBundleDigest: agent.digest,
+					...(options.workflowFixtureReceipt === undefined ? {} : { workflowFixtureReceipt: options.workflowFixtureReceipt }),
+					...(options.authorHostPort === undefined ? {} : { authorHostPort: options.authorHostPort }),
 					values,
 					network: network.name,
 					labelValue,
@@ -381,7 +394,7 @@ export async function runInterop(
 				},
 			);
 
-			scenarioOutcomes.push({ scenario: file, ok: outcome.ok, ...(outcome.message !== undefined ? { message: outcome.message } : {}) });
+			scenarioOutcomes.push({ scenario: file, ok: outcome.ok, ...(outcome.message !== undefined ? { message: outcome.message } : {}), ...(outcome.evidence !== undefined ? { evidence: outcome.evidence } : {}) });
 			currentScenario = undefined;
 			report(
 				`[${position + 1}/${scenarioFiles.length}] ${file}: ${outcome.ok ? "ok" : "failed"} after ${elapsedSeconds(scenarioStartedAt)}s`,

@@ -57,6 +57,21 @@ candidate = { path = "", digest = "", commit = "", acknowledged = false }
 			checkForLeaks: () => Promise.resolve({ ok: true }),
 		}));
 
+			const images = {
+				"tier-sling": { identifier: "sling" },
+				"client-runner": { identifier: "runner" },
+				"severance-proxy": { identifier: "proxy" },
+			};
+			for (const authorHostPort of [0, -1, 65536, 1.5, Number.NaN]) {
+				await expect(runInterop(baseDir, { images, authorHostPort })).rejects.toThrow("author host port");
+			}
+			for (const authorHostPort of [1, 65535]) {
+				const boundary = await runInterop(baseDir, { images, authorHostPort });
+				expect(boundary.ok).toBe(false);
+				if (boundary.ok) throw new Error("absent sides unexpectedly resolved");
+				expect(boundary.reason).toBe("SIDE_UNRESOLVED");
+			}
+
 			const outcome = await runInterop(baseDir, {
 				images: {
 					"tier-sling": { identifier: "sling" },

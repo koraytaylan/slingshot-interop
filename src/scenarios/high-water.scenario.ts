@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright 2026 Koray Taylan Davgana
 
+import { submittedOperation } from "./submission.ts";
 // A positive capture for a subscription admitted by the real client. This
 // checks the closed client wire shape, not full stream-reset reconciliation.
 // Authority: slingshot/schemas/agent-protocol/job/subscription-high-water.json
 // and slingshot-agent-connection/src/subscription_high_water.rs.
-import { agentAuthorization, agentSnapshot, envelope, invoke, machineArguments, resolveAgentOperationIdentifier, runner, waitTerminal } from "./support.ts";
+import { authorHostPort } from "../sides/author-host-port.ts";
+import { agentAuthorization, agentSnapshot, invoke, machineArguments, resolveAgentOperationIdentifier, runner, waitTerminal } from "./support.ts";
 import type { StartClientRunnerOptions } from "../sides/client-runtime.ts";
 import type { ContainerHandle } from "../harness/container.ts";
 import { readBoundedJson } from "../harness/bounded-json.ts";
@@ -61,12 +63,8 @@ async function capture(handle: ContainerHandle, options: StartClientRunnerOption
 		"--path", parent, "--name", "high-water",
 		"--title", "High-water contract probe"], options);
 	if (!created.ok) return created;
-	if (created.exitCode !== 0) return { ok: false, message: `high-water admission exited ${created.exitCode}: ${created.stderr}` };
-	const receipt = envelope(created.stdout, "high-water admission");
+	const receipt = submittedOperation(created, `${options.labelValue}-high-water`);
 	if (!receipt.ok) return receipt;
-	if (receipt.outcome !== "operation_receipt" || typeof receipt.operation_identifier !== "string" || receipt.operation_identifier.length === 0) {
-		return { ok: false, message: "high-water admission did not return an operation receipt" };
-	}
 	const ended = await waitTerminal(handle, machine, receipt.operation_identifier, options, options.values.readiness.harnessSeconds * 1000);
 	if (!ended.ok) return ended;
 	if (ended.envelope.outcome !== "operation_result") return { ok: false, message: "high-water admission did not finish successfully" };
@@ -86,7 +84,7 @@ async function capture(handle: ContainerHandle, options: StartClientRunnerOption
 		|| !Number.isSafeInteger(generation) || generation < 1 || typeof digest !== "string" || !/^[0-9a-f]{64}$/.test(digest)) {
 		return { ok: false, message: "the admitted snapshot did not provide a complete high-water request binding" };
 	}
-	const origin = `http://127.0.0.1:${options.values.ports.author}`;
+	const origin = `http://127.0.0.1:${authorHostPort(options)}`;
 	const authorization = agentAuthorization("admin", "admin");
 	const tokenResponse = await fetch(`${origin}/libs/granite/csrf/token.json`, { headers: { authorization }, signal: AbortSignal.timeout(10_000), redirect: "error" });
 	const tokenDocument = await readBoundedJson(tokenResponse, options.values.capture.maximumBytes);

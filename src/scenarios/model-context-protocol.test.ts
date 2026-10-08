@@ -21,11 +21,25 @@ import {
 	legacySessionLines,
 	minimalArgumentsFor,
 	minimalValueFor,
+	probeArgumentsFor,
 	protocolRevision,
 	requestLine,
 	requestLines,
 	resultOf,
 } from "./model-context-protocol.scenario.ts";
+
+test("catalogue probes scope every repository anchor to their owned fixture", () => {
+	for (const member of ["root_path", "path", "request_address"]) {
+		const tool = { name: "read_fixture", inputSchema: {
+			required: [member, "operation_identifier"],
+			properties: { [member]: { type: "string", pattern: "^/" }, operation_identifier: { type: "string" } },
+		} };
+		expect(probeArgumentsFor(tool, "key", "owned-operation", "/content/owned")).toEqual({
+			[member]: "/content/owned", operation_identifier: "owned-operation",
+		});
+	}
+	expect(probeArgumentsFor({ name: "control", inputSchema: {} }, "key", "operation", "/content/owned")).toEqual({});
+});
 
 describe("catalog sweep answer evidence", () => {
 	const answer = (outcome: unknown) => ({ content: [{ type: "text", text: JSON.stringify({ outcome }) }] });
@@ -319,4 +333,16 @@ describe("the arguments a consumer builds from a tool's own schema", () => {
 			"maintenance-apply",
 		]);
 	});
+});
+
+
+test("candidate protocol evidence refuses duplicate decoded object members", () => {
+    for (const document of ['{"jsonrpc":"2.0","id":"catalogue","result":{},"result":{}}', '{"jsonrpc":"2.0","id":"catalogue","result":{"_meta":{},"_meta":{}}}']) {
+        expect(() => answeredDocuments(document)).toThrow();
+    }
+});
+
+test("catalogue probes use valid lexical values for constrained string domains", () => {
+	expect(minimalValueFor("primary_node_type", { type: "string" })).toBe("nt:unstructured");
+	expect(minimalValueFor("request_address", { type: "string" })).toBe("/content");
 });

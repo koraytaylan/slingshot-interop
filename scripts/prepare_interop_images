@@ -83,7 +83,7 @@ fi
 # above by digest and the Containerfile names exactly those digests — so the
 # built bytes descend only from the pinning.
 echo "building ${TIER_NAME}:${TIER_TAG} from interop/tier-sling/Containerfile"
-if ! podman build --quiet --platform linux/amd64 -f "${CONTAINERFILE}" -t "${TIER_NAME}:${TIER_TAG}" "${REPO_ROOT}" > /dev/null; then
+if ! podman build --quiet --pull=never --network=none --platform linux/amd64 -f "${CONTAINERFILE}" -t "${TIER_NAME}:${TIER_TAG}" "${REPO_ROOT}" > /dev/null; then
 echo "building ${TIER_NAME}:${TIER_TAG} failed; the Containerfile and the pulled bases are the things to check" >&2
 exit 1
 fi
@@ -119,7 +119,7 @@ echo "${RUNNER_CONTAINERFILE} is missing; the client-runner image cannot be buil
 exit 1
 fi
 echo "building ${RUNNER_NAME}:${RUNNER_TAG} from interop/client-runner/Containerfile"
-if ! podman build --quiet --platform linux/amd64 -f "${RUNNER_CONTAINERFILE}" -t "${RUNNER_NAME}:${RUNNER_TAG}" "${REPO_ROOT}" > /dev/null; then
+if ! podman build --quiet --pull=never --network=none --platform linux/amd64 -f "${RUNNER_CONTAINERFILE}" -t "${RUNNER_NAME}:${RUNNER_TAG}" "${REPO_ROOT}" > /dev/null; then
 echo "building ${RUNNER_NAME}:${RUNNER_TAG} failed; the Containerfile and the pulled bases are the things to check" >&2
 exit 1
 fi
@@ -162,7 +162,7 @@ echo "run scripts/prepare_tooling to install the pinned bytes" >&2
 exit 1
 fi
 echo "building ${PROXY_NAME}:${PROXY_TAG} from interop/severance-proxy/Containerfile"
-if ! podman build --quiet --platform linux/amd64 -f "${PROXY_CONTAINERFILE}" -t "${PROXY_NAME}:${PROXY_TAG}" "${REPO_ROOT}" > /dev/null; then
+if ! podman build --quiet --pull=never --network=none --platform linux/amd64 -f "${PROXY_CONTAINERFILE}" -t "${PROXY_NAME}:${PROXY_TAG}" "${REPO_ROOT}" > /dev/null; then
 echo "building ${PROXY_NAME}:${PROXY_TAG} failed; the Containerfile and the pulled base are the things to check" >&2
 exit 1
 fi

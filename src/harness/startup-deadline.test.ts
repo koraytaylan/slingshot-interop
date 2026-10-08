@@ -39,11 +39,16 @@ test.each(["container", "client"])("%s startup rejects readiness at or after its
 				probes = 0; calls = [];
 				const common = { image: "fixture", labelKey: "fixture", labelValue: "fixture", network: "fixture",
 					captureDirectory: root, captureLimitBytes: 1024, deadline: new Date(101), stopGraceSeconds: 0,
-					cleanupTimeoutSeconds: 1,
+					cleanupTimeoutSeconds: 1, publish: [{ host: 18080, container: 8080 }],
 					probeIntervalSeconds: 0, command: [], probe: async () => { probes++; now = completion; return true; } };
 				const answer = ${JSON.stringify(kind)} === "container" ? await startContainer(common)
 					: await startClientRunner({ ...common, executablePath: "/fixture", scratchHome: { homePath: root },
 						values: { label: { key: "fixture" }, capture: { maximumBytes: 1024 }, readiness: { pollIntervalSeconds: 0 } } });
+				if (${JSON.stringify(kind)} === "container") {
+					const run = calls.find(command => command[0] === "run");
+					if (run[run.indexOf("-p") + 1] !== "18080:8080") throw new Error("port mapping changed");
+					if (answer.ok && JSON.stringify(answer.publishedPorts) !== "[18080]") throw new Error("reported port differs");
+				}
 				results.push({ ok: answer.ok, reason: answer.reason, probes, removed: calls.some(command => command[0] === "rm") });
 				if (answer.ok) {
 					const handle = answer.handle ?? answer;

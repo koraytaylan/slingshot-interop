@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright 2026 Koray Taylan Davgana
 
+import { submittedOperation } from "./submission.ts";
 // The detached-operation scenario: a submission carrying --detach is
-// acknowledged with a receipt, the client then observes the
+// acknowledged with a receipt or settled answer; the client observes the
 // operation to its terminal disposition, and the agent's own record agrees
 // with what the client reports. The two disagreeing is the failure this
 // scenario exists to catch.
 
-import { agentAuthorization, agentSnapshot, envelope, invoke, machineArguments, resolveAgentOperationIdentifier, runner, waitTerminal } from "./support.ts";
+import { authorHostPort } from "../sides/author-host-port.ts";
+import { agentAuthorization, agentSnapshot, invoke, machineArguments, resolveAgentOperationIdentifier, runner, waitTerminal } from "./support.ts";
 import type { StartClientRunnerOptions } from "../sides/client-runtime.ts";
 import type { ContainerHandle } from "../harness/container.ts";
 import { verifyCreatedFolder, verifyCreatedFolderResult } from "./created-folder.ts";
@@ -30,7 +32,7 @@ export const scenario = {
 			return { ok: false, message: `daemon start exited ${started.exitCode}: ${started.stderr}` };
 		}
 
-		// 1. Submit a detached write and require its receipt. Completion may
+		// 1. Submit a detached write and retain its operation identity. Completion may
 		// race observation; this scenario does not measure that ordering.
 		const submitted = await invoke(handle, [
 			runner(), ...machine, "create_asset_folder",
@@ -43,17 +45,9 @@ export const scenario = {
 		if (!submitted.ok) {
 			return { ok: false, message: `the detached submission could not run: ${submitted.message}` };
 		}
-		if (submitted.exitCode !== 0) {
-			return { ok: false, message: `the detached submission exited ${submitted.exitCode}: ${submitted.stderr}` };
-		}
-		const receipt = envelope(submitted.stdout, "create_asset_folder --detach");
-		if (receipt.ok === false) {
-			return receipt;
-		}
-		if ((receipt as Record<string, unknown>)['outcome'] !== "operation_receipt") {
-			return { ok: false, message: `the detached submission answered ${String((receipt as Record<string, unknown>)['outcome'])} instead of a receipt: ${submitted.stdout}` };
-		}
-		const operationIdentifier = (receipt as Record<string, unknown>)['operation_identifier'];
+		const receipt = submittedOperation(submitted, `${options.labelValue}-detached`);
+		if (!receipt.ok) return receipt;
+		const operationIdentifier = receipt.operation_identifier;
 		if (typeof operationIdentifier !== "string" || operationIdentifier.length === 0) {
 			return { ok: false, message: `the detached submission named no operation: ${submitted.stdout}` };
 		}
@@ -93,13 +87,13 @@ export const scenario = {
 		// the platform's own 403 — it has no default renderer for a node that
 		// is not a page — and what proves the write is the document the
 		// platform renders for it.
-		const content = await fetch(`http://127.0.0.1:${options.values.ports.author}${folderPath}.json`, {
+		const content = await fetch(`http://127.0.0.1:${authorHostPort(options)}${folderPath}.json`, {
 			redirect: "error",
 			headers: { authorization: agentAuthorization("admin", "admin") },
 			signal: AbortSignal.timeout(10_000),
 		});
 		const verifiedContent = await verifyCreatedFolder(content, title, options.values.capture.maximumBytes);
 		if (!verifiedContent.ok) return verifiedContent;
-		return { ok: true, message: "detached operation: receipt observed, client and retained agent results match the requested folder, agent reports success and folder properties match" };
+		return { ok: true, message: "detached operation: durable answer observed, client and retained agent results match the requested folder, agent reports success and folder properties match" };
 	},
 };

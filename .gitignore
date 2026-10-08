@@ -18,7 +18,7 @@
 /.dependency-cache/
 
 # The supplied sibling inputs: each side's released or candidate bytes, placed
-# by their holder, never built, fetched, or cached here.
+# by their holder. Candidate preparation writes to an explicit durable destination.
 /.supplied/
 
 # The installed modules the compiler and the type definitions need.

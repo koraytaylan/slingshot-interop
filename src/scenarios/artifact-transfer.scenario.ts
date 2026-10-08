@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright 2026 Koray Taylan Davgana
 
+import { submittedOperation } from "./submission.ts";
 // The artifact-transfer scenario: a result too large to answer inline is
 // answered by reference, and the reader verifies the bytes itself. The
 // content is planted through the platform's own default POST servlet — the
 // runtime's own way of making content — and read back deeply enough that the
 // serialized result exceeds the inline bound.
 
+import { authorHostPort } from "../sides/author-host-port.ts";
 import { agentAuthorization, envelope, invoke, machineArguments, resolveLocalArtifactIdentifier, runner, waitTerminal } from "./support.ts";
 import type { StartClientRunnerOptions } from "../sides/client-runtime.ts";
 import type { ContainerHandle } from "../harness/container.ts";
@@ -50,7 +52,7 @@ export const scenario = {
 			body.set(`text${String(index).padStart(4, "0")}`, "A".repeat(propertyBytes));
 		}
 		const path = `/content/interop-artifact/${options.labelValue}`;
-		const planting = await fetch(`http://127.0.0.1:${options.values.ports.author}${path}`, {
+		const planting = await fetch(`http://127.0.0.1:${authorHostPort(options)}${path}`, {
 			method: "POST",
 			headers: { authorization: agentAuthorization("admin", "admin") },
 			body,
@@ -76,17 +78,9 @@ export const scenario = {
 		if (!submitted.ok) {
 			return { ok: false, message: `the oversized load could not run: ${submitted.message}` };
 		}
-		if (submitted.exitCode !== 0) {
-			return { ok: false, message: `the oversized load exited ${submitted.exitCode}: ${submitted.stderr}` };
-		}
-		const receipt = envelope(submitted.stdout, "load_content_as_json");
-		if (receipt.ok === false) {
-			return receipt;
-		}
-		if ((receipt as Record<string, unknown>)['outcome'] !== "operation_receipt") {
-			return { ok: false, message: `the oversized load answered ${String((receipt as Record<string, unknown>)['outcome'])} instead of a receipt: ${submitted.stdout}` };
-		}
-		const operationIdentifier = (receipt as Record<string, unknown>)['operation_identifier'];
+		const receipt = submittedOperation(submitted, `${options.labelValue}-artifact`);
+		if (!receipt.ok) return receipt;
+		const operationIdentifier = receipt.operation_identifier;
 		if (typeof operationIdentifier !== "string" || operationIdentifier.length === 0) {
 			return { ok: false, message: `the oversized load named no operation: ${submitted.stdout}` };
 		}

@@ -10,10 +10,12 @@ export type ScenarioOutcome = {
 	readonly ok: boolean;
 	readonly message?: string;
 	readonly reason?: string;
+	readonly evidence?: Record<string, unknown>;
 };
 
 export type ReportData = {
 	readonly label: string;
+	readonly ports?: { readonly authorHost: number; readonly authorContainer: number };
 	readonly sides: {
 		readonly slingshot: ResolvedSide;
 		readonly agent: ResolvedSide;

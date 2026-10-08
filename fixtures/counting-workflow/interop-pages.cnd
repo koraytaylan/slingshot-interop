@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright 2026 Koray Taylan Davgana
+// Minimal public-tier fixtures; these types do not provide page or asset platform APIs.
+<cq='urn:slingshot:interop:synthetic-page-types'>
+<dam='urn:slingshot:interop:synthetic-asset-types'>
+
+[cq:Page] > nt:unstructured
+[cq:PageContent] > nt:unstructured
+[dam:Asset] > nt:unstructured

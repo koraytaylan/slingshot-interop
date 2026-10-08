@@ -16,7 +16,7 @@ test.each(["success", "token-overflow", "capture-overflow", "token-refused", "ca
 			mock.module(${JSON.stringify(new URL("./support.ts", import.meta.url).pathname)}, () => ({
 				runner: () => "runner", machineArguments: () => [], agentAuthorization: () => "Basic fixture",
 				invoke: async () => ({ ok: true, exitCode: 0, stderr: "", stdout: "receipt" }),
-				envelope: () => ({ ok: true, outcome: "operation_receipt", operation_identifier: mode === "admission-empty-identifier" ? "" : "local" }),
+				envelope: () => ({ ok: true, outcome: "operation_receipt", operation_identifier: mode === "admission-empty-identifier" ? "" : "fixture-high-water" }),
 				waitTerminal: async () => ({ ok: true, envelope: { outcome: "operation_result", result: { repository_path: mode === "admission-wrong-client-result" ? "/wrong" : folderPath } } }),
 				resolveAgentOperationIdentifier: async () => ({ ok: true, agentOperationIdentifier: "remote", targetDigest: "e".repeat(64) }),
 				agentSnapshot: async (_options, identifier, target) => {

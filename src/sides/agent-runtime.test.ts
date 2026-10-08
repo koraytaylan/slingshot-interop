@@ -267,7 +267,12 @@ describe("the planted jar against the built tier-sling image", () => {
 				const activeBudgetMs = 30 * values.readiness.pollIntervalSeconds * 1000;
 				const activeDeadline = new Date(Date.now() + activeBudgetMs);
 				let configurations: readonly { readonly name: string; readonly digest: string }[] = [];
+				const reservation = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
+				const authorHostPort = reservation.port;
+				await reservation.stop(true);
+				if (authorHostPort === undefined) throw new Error("fixture did not reserve an HTTP port");
 				const options: StartSlingRuntimeOptions = {
+					authorHostPort,
 					configurationObserved: inputs => { configurations = inputs; },
 					image: builtImage(),
 					values,

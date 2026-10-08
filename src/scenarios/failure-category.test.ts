@@ -22,9 +22,9 @@ test.each(["declared", "transport", "reclassified", "missing-metadata", "success
 			runner: () => "runner", machineArguments: () => [],
 			invoke: async (_handle, command) => {
 				observed.push(command);
-				return { ok: true, exitCode: 0, stderr: "", stdout: JSON.stringify({ outcome: "operation_receipt", operation_identifier: "original" }) };
+				return { ok: true, exitCode: 0, stderr: "", stdout: JSON.stringify({ outcome: "operation_receipt", operation_identifier: "fixture-failure" }) };
 			},
-			envelope: stdout => JSON.parse(stdout),
+			envelope: stdout => ({ ok: true, ...JSON.parse(stdout) }),
 			waitTerminal: async (_handle, _machine, identifier) => {
 				observed.push(["wait", identifier]);
 				return { ok: true, envelope: { outcome: mode === "success" ? "operation_result" : "operation_terminal_error", failure } };
@@ -47,9 +47,9 @@ test.each(["declared", "transport", "reclassified", "missing-metadata", "success
 	expect(stderr).toBe("");
 	const { answer, observed } = JSON.parse(stdout);
 	expect(answer.ok).toBe(mode === "declared");
-	expect(observed.find((event: string[]) => event[0] === "wait")).toEqual(["wait", "original"]);
+	expect(observed.find((event: string[]) => event[0] === "wait")).toEqual(["wait", "fixture-failure"]);
 	if (mode === "declared") {
-		expect(observed.find((event: string[]) => event[0] === "resolve")).toEqual(["resolve", "original"]);
+		expect(observed.find((event: string[]) => event[0] === "resolve")).toEqual(["resolve", "fixture-failure"]);
 		expect(observed.find((event: string[]) => event[0] === "snapshot")).toEqual(["snapshot", "remote-original", "e".repeat(64)]);
 	}
 });

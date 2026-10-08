@@ -96,3 +96,15 @@ describe("writeReport", () => {
 		expect(fs.writeFile).not.toHaveBeenCalled();
 	});
 });
+
+
+test("catalogue observations survive durable TOML report serialization", async () => {
+    const evidence = { transport_contract_digest: "a".repeat(64), canonical_json_contract_digest: "b".repeat(64), client_contracts: [{ command_wire_name: "query_paths", command_semantic_contract_version: "0.0.0" }], agent_contracts: [{ command_wire_name: "query_paths", command_semantic_contract_version: "0.0.0" }] };
+    let rendered = "";
+    const writer = spyOn(fs, "writeFile").mockImplementation(async (_path, content) => { rendered = String(content); });
+    try {
+        await writeReport("/tmp/work", { ...validData, scenarios: [{ scenario: "00-contract-catalogue.scenario.ts", ok: true, evidence }] });
+        const read = Bun.TOML.parse(rendered) as unknown as ReportData;
+        expect(read.scenarios[0]!.evidence).toEqual(evidence);
+    } finally { writer.mockRestore(); }
+});

@@ -26,11 +26,11 @@ test.each(["success", "missing-agent-result", "wrong-agent-result", "surplus-age
 		mock.module(${JSON.stringify(new URL("./support.ts", import.meta.url).pathname)}, () => ({
 			runner: () => "runner", machineArguments: () => [],
 			invoke: async (_handle, command) => ({ ok: true, exitCode: 0, stderr: "", stdout: JSON.stringify({
-				outcome: "operation_receipt", operation_identifier: command.includes("load_content_as_json") ? "read" : "created",
+				outcome: "operation_receipt", operation_identifier: command.includes("load_content_as_json") ? "fixture-write-read-read" : "fixture-write-read",
 			}) }),
-			envelope: stdout => JSON.parse(stdout),
+			envelope: stdout => ({ ok: true, ...JSON.parse(stdout) }),
 			waitTerminal: async (_handle, _machine, identifier) => ({ ok: true, envelope: {
-				outcome: "operation_result", result: identifier === "read" ? ${JSON.stringify(valid)} : clientResult,
+				outcome: "operation_result", result: identifier === "fixture-write-read-read" ? ${JSON.stringify(valid)} : clientResult,
 			} }),
 			resolveAgentOperationIdentifier: async (_options, _profile, identifier) => {
 				observed.push(["resolve", identifier]);
@@ -53,7 +53,7 @@ test.each(["success", "missing-agent-result", "wrong-agent-result", "surplus-age
 	expect(stderr).toBe("");
 	const { answer, observed } = JSON.parse(stdout);
 	expect(answer.ok).toBe(mode === "success");
-	expect(observed).toEqual([["resolve", "created"], ["snapshot", "remote-created", "e".repeat(64)]]);
+	expect(observed).toEqual([["resolve", "fixture-write-read"], ["snapshot", "remote-created", "e".repeat(64)]]);
 });
 
 test("readback must name the requested path in both envelope and document", () => {
