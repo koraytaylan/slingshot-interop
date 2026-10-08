@@ -30,7 +30,7 @@ test.each(["success", "stale-replay", "wrong-refusal", "change-unobserved", "sto
 		const failure = category => ({ outcome: "operation_terminal_error", failure: { metadata: category } });
 		mock.module(${modulePath("./discovery-lifecycle-runtime.ts")}, () => ({ DiscoveryLifecycleRuntime: class {
 			async read(path) {
-				if (path.endsWith("capabilities")) return { command_contracts: [{ command_wire_name: "list_components", command_semantic_contract_version: "0.0.0", command_contract_limits_digest: "5b76d21b81c0379e9d9e30426c5aff7939321b9466af183753091af19939d222" }] };
+				if (path.endsWith("capabilities")) return { command_contracts: [{ command_wire_name: "list_components", command_semantic_contract_version: "0.0.0", command_contract_limits_digest: "10a708a6b720a2b70ed150fb5c0bbf063ea8c235a4395cffe51d92d9c2193ecd" }] };
 				if (path.endsWith(".1.json")) return Object.fromEntries(["one", "two", "three", "four"].map(name => [name, { "jcr:primaryType": "nt:unstructured", "sling:resourceType": "interop/lifecycle" }]));
 				return { "jcr:title": changed && mode !== "change-unobserved" ? "lifecycle-change" : "old" };
 			}
