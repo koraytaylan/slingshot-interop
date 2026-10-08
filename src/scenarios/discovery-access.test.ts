@@ -26,7 +26,7 @@ test.each(["success", "foreign-accepted", "leaked-replay", "deny-ineffective", "
 		mock.module(${modulePath("./discovery-access-runtime.ts")}, () => ({ DiscoveryAccessRuntime: class {
 			username = "fixture-user"; runnerLabel = "run-fixture";
 			async read(path, identity) {
-				if (path.endsWith("capabilities")) return { command_contracts: [{ command_wire_name: "list_components", command_semantic_contract_version: "0.0.0", command_contract_limits_digest: "fe98b915cb84f787a5c54f8fab2e1408e108524e2765e96c9877cd236451da78" }] };
+				if (path.endsWith("capabilities")) return { command_contracts: [{ command_wire_name: "list_components", command_semantic_contract_version: "0.0.0", command_contract_limits_digest: "66be041fb0623ea682a53b61d20e19c458e25d2a2df209c9ca9edcc2a405278e" }] };
 				if (denied && identity === "admin" && mode === "deleted-row") throw new Error("row was deleted");
 				calls.push("read-" + identity); return { "sling:resourceType": "interop/access-component" };
 			}

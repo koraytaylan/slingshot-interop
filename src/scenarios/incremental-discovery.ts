@@ -2,7 +2,7 @@
 // Copyright 2026 Koray Taylan Davgana
 
 // These independent fixture bounds belong to this reviewed command-limits digest.
-export const discoveryLimitsDigest = "fe98b915cb84f787a5c54f8fab2e1408e108524e2765e96c9877cd236451da78";
+export const discoveryLimitsDigest = "66be041fb0623ea682a53b61d20e19c458e25d2a2df209c9ca9edcc2a405278e";
 export const candidateBound = 100_000;
 export const groupCount = 100;
 export const leavesPerGroup = 1_000;
